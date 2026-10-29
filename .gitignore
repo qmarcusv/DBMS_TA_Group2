@@ -1,0 +1,40 @@
+# ==============================================================================
+# Git Ignore Rules for Spine MRI DBMS Project
+# ==============================================================================
+
+# Raw Large Datasets & Archives (Strictly ignore multi-gigabyte files)
+01_MRI_Data/
+*.zip
+*.tar.gz
+*.7z
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# LaTeX Build Intermediates (Keep main.pdf for convenient reading)
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.nav
+report/*.snm
+report/*.synctex.gz
+report/*.bbl
+report/*.blg
+report/*.fdb_latexmk
+report/*.fls
+
+# OS and Editor Artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.bak.tmp

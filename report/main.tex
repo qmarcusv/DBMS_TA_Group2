@@ -1,0 +1,100 @@
+\documentclass[a4paper,10pt,oneside]{report}
+\usepackage[margin=20mm,headheight=28pt,headsep=6mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern,microtype}
+\usepackage{graphicx,booktabs,tabularx,array,amsmath,amssymb,fancyhdr,lastpage,float,enumitem,placeins,xurl,xcolor,etoolbox}
+\usepackage{listings,needspace,upquote}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc}
+\usepackage{titlesec}
+\usepackage{hyperref}
+
+\makeatletter
+\patchcmd{\chapter}{\if@openright\cleardoublepage\else\clearpage\fi}{\par\vspace{14pt}}{}{}
+\makeatother
+
+\titleformat{\chapter}[hang]{\normalfont\Large\bfseries}{Chapter \thechapter:\ }{0pt}{}
+\titleformat{\section}[block]{\normalfont\large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}[block]{\normalfont\normalsize\bfseries}{\thesubsection}{0.6em}{}
+\titlespacing*{\chapter}{0pt}{4pt}{8pt}
+\titlespacing*{\section}{0pt}{8pt}{3pt}
+\titlespacing*{\subsection}{0pt}{6pt}{2pt}
+
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,urlcolor=blue!55!black}
+\linespread{1.05}
+\setlength{\parskip}{3.5pt}
+\setlength{\parindent}{0pt}
+\setlength{\emergencystretch}{2em}
+\widowpenalty=10000
+\clubpenalty=10000
+\setlength{\textfloatsep}{7pt plus 2pt minus 2pt}
+\setlength{\floatsep}{6pt plus 2pt minus 2pt}
+\setlength{\intextsep}{6pt plus 2pt minus 2pt}
+\setlist[itemize]{leftmargin=1.5em,topsep=2pt,itemsep=1.5pt,parsep=0pt}
+\setlist[enumerate]{leftmargin=1.7em,topsep=2pt,itemsep=1.5pt,parsep=0pt}
+\setlist[description]{topsep=2pt,itemsep=1.5pt,parsep=0pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\ReportBlock}[1]{\par\Needspace{3\baselineskip}\smallskip\noindent\textbf{#1}\par\nobreak\smallskip}
+
+\lstdefinestyle{reportcode}{%
+  basicstyle=\ttfamily\small,
+  keywordstyle=\bfseries\color{blue!50!black},
+  commentstyle=\itshape\color{black!60},
+  stringstyle=\color{black},
+  backgroundcolor=\color{black!3},
+  frame=single,rulecolor=\color{black!18},framerule=0.3pt,
+  xleftmargin=3mm,xrightmargin=3mm,framexleftmargin=2mm,framexrightmargin=2mm,
+  aboveskip=5pt,belowskip=5pt,
+  columns=fullflexible,keepspaces=true,showstringspaces=false,
+  breaklines=true,breakatwhitespace=true,upquote=true,
+  tabsize=2
+}
+\lstnewenvironment{SQLCode}{\lstset{style=reportcode,language=SQL}}{}
+\lstnewenvironment{PythonCode}{\lstset{style=reportcode,language=Python}}{}
+
+\setcounter{tocdepth}{2}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\includegraphics[height=8mm]{image/hcmut.png}\quad\small Ho Chi Minh City University of Technology --- CO3021}
+\fancyhead[R]{\small\texttt{TA} --- Group 02}
+\fancyfoot[L]{\scriptsize Clinical MRI Low Back Pain Data Pipeline \& DBMS Optimization}
+\fancyfoot[R]{\scriptsize Page \thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\footrulewidth}{0.3pt}
+
+\begin{document}
+\hypersetup{pageanchor=false}
+\begin{titlepage}
+\thispagestyle{empty}
+\begin{center}
+{\large VIETNAM NATIONAL UNIVERSITY, HO CHI MINH CITY}\\[2.5mm]
+{\large HO CHI MINH CITY UNIVERSITY OF TECHNOLOGY}\\[3.5mm]
+{\normalsize Faculty of Computer Science and Engineering}\\[3mm]
+{\small Course CO3021 --- Database Management Systems}\\[13mm]
+\includegraphics[width=26mm]{image/hcmut.png}\\[12mm]
+{\Large\bfseries DATABASE MANAGEMENT SYSTEMS PROJECT REPORT}\\[4mm]
+{\normalsize Clinical Case-Study: Low Back Pain Diagnosis \& Imaging Pipeline}\\[10mm]
+\rule{\linewidth}{0.5pt}\\[6mm]
+{\LARGE\bfseries Workload-Driven Evaluation of Microsoft SQL Server 2025:\\[2mm]
+Storage Architectures, Relational Ingestion,\\[2mm]
+and AI Feature Extraction Pipeline (Role 1)}\\[5mm]
+{\normalsize Applied to 48,345 Lumbar Spine MRI Scans and Radiologist Clinical Reports}\\[6mm]
+\rule{\linewidth}{0.5pt}\\[14mm]
+{\large\bfseries Group 02}\\[10mm]
+{\normalsize Course Instructor: PhD. Phan Trong Nhan}\\[7mm]
+{\small Project Repository: \url{https://github.com/qmarcusv/DBMS_TA_Group2}}\\[6mm]
+{\small Ho Chi Minh City, October 2026}
+\end{center}
+\end{titlepage}
+
+\hypersetup{pageanchor=true}
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+\input{source/chapters/01-datapipeline-role1}
+
+\end{document}
