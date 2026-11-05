@@ -1,0 +1,3 @@
+Changed database context to 'SpineMRI_DBMS'.
+23:55:35.839  A: UPDATE 0001 -> Revised (uncommitted, X lock held)
+23:55:45.849  A: COMMIT

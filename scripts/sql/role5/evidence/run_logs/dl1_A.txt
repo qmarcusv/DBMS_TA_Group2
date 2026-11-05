@@ -1,0 +1,7 @@
+Changed database context to 'SpineMRI_DBMS'.
+23:56:31.678  A: X lock on Patients(0001) acquired
+23:56:37.687  A: requesting X lock on MRI_Scans(ScanID = 1) ...
+23:56:39.512  A: COMMIT - survived
+Session Outcome
+------- -------
+A COMMITTED (survivor)

@@ -1,0 +1,14 @@
+Changed database context to 'SpineMRI_DBMS'.
+WaitingSession BlockedBy wait_type WaitMs wait_resource WaitingStatement
+-------------- --------- --------- ------ ------------- ----------------
+SessionID Resource ObjectName IndexName KeyHashOrPage Mode Status
+--------- -------- ---------- --------- ------------- ---- ------
+62 KEY Patients PK_Patients (5f6f76815dbe) X GRANT
+62 OBJECT Patients NULL  IX GRANT
+62 PAGE Patients PK_Patients 1:408 IX GRANT
+session_id IsolationLevel deadlock_priority open_transaction_count
+---------- -------------- ----------------- ----------------------
+62 READ COMMITTED 0 1
+DatabaseName reserved_page_count reserved_space_kb
+------------ ------------------- -----------------
+SpineMRI_DBMS 0 0

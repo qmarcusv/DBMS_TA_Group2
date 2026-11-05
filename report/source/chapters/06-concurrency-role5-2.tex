@@ -1,0 +1,334 @@
+% =====================================================================
+% Role 5 - Member 5.2: Deadlock and Multi-Version Concurrency Control
+% File: report/source/chapters/06-concurrency-role5-2.tex
+% Follows the Role 5.1 chapter (06-concurrency-role5.tex).
+% Scripts:  scripts/sql/role5/*.sql
+% Evidence: scripts/sql/role5/evidence/ (run logs + .xdl deadlock graphs)
+% Uses only packages loaded in main.tex (tikz, booktabs, tabularx, multirow,
+% float, listings -> SQLCode environment).
+% =====================================================================
+
+% Screenshot helper: shows a placeholder box if the image file is missing
+\providecommand{\rolefivefig}[3]{% #1 = image path, #2 = width, #3 = placeholder text
+  \IfFileExists{#1}{\includegraphics[width=#2]{#1}}%
+  {\fbox{\parbox{0.8\textwidth}{\centering\vspace{1.2cm}[Insert screenshot: #3]\vspace{1.2cm}}}}}
+
+\chapter{Deadlock and Multi-Version Concurrency Control (Role 5.2)}
+\label{chap:r5-2}
+
+This chapter complements Role~5.1 (lock modes, isolation levels and read phenomena) and explains how SQL Server deals with \textbf{deadlocks} and how it uses \textbf{row versioning (MVCC)} so that readers do not wait for writers. Following the project guideline, the slide theory is only recalled briefly; the focus is (i) every mechanism SQL Server offers for these two problems --- what it is, why it exists, how the engine runs it and how to use it --- and (ii) how SQL Server actually handles the three canonical queries Q1, Q2 and Q3 under concurrent writes.
+
+% =====================================================================
+\section{Brief Recap of the Chapter 5 Slides}
+\label{sec:r5-2-recap}
+
+\begin{itemize}
+  \item \textbf{Deadlock.} Two transactions that both follow 2PL can still block each other forever (slide example: $T'_1$ holds \code{read\_lock(Y)} and waits for \code{write\_lock(X)}, while $T'_2$ holds \code{read\_lock(X)} and waits for \code{write\_lock(Y)}).
+  \item \textbf{Handling strategies.} \emph{Prevention}: conservative 2PL locks every item before starting. \emph{Detection and resolution}: the scheduler keeps a \textbf{wait-for graph} with an edge $T_i \rightarrow T_j$ when $T_i$ waits for a lock held by $T_j$; a deadlock exists \emph{iff} the graph has a cycle, and one transaction of the cycle is chosen as the \textbf{victim} and rolled back. \emph{Avoidance}: \textbf{wait-die} and \textbf{wound-wait} compare transaction timestamps $TS(T)$ so that a cycle can never close. \emph{Starvation}: the same transaction may be chosen as victim again and again.
+  \item \textbf{Multiversion concurrency control.} The DBMS keeps several versions $X_1,\dots,X_n$ of an item so that a read is never rejected. The slides present (a) multiversion timestamp ordering with $read\_TS(X_i)$ / $write\_TS(X_i)$, and (b) \textbf{multiversion 2PL with certify locks}, where readers keep reading the committed version $X$ while a writer prepares $X'$. The cost is extra storage and a garbage collector for old versions.
+\end{itemize}
+
+SQL Server implements \emph{detection and resolution} (not prevention or timestamp avoidance) for deadlocks, and a versioning scheme close to ``multiversion 2PL'' (writers still take X locks, readers read the last committed version) for MVCC. The rest of this chapter shows how.
+
+% =====================================================================
+\section{Mechanisms Provided by SQL Server}
+\label{sec:r5-2-methods}
+
+Table~\ref{tab:r5-methods} lists every mechanism SQL Server offers for the two problems of this chapter. Each one is then analysed: content, purpose, how the engine runs it, and how to use it.
+
+\begin{table}[H]
+\centering
+\caption{SQL Server mechanisms for deadlock handling and multi-version concurrency}
+\label{tab:r5-methods}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{c l X X}
+\toprule
+\textbf{\#} & \textbf{Mechanism} & \textbf{Purpose} & \textbf{How it is used} \\
+\midrule
+M1  & Deadlock Monitor & Detect cycles in the waits-for graph automatically & Always on (background task) \\
+M2  & Victim selection, \code{DEADLOCK\_PRIORITY} & Decide which transaction is rolled back & \code{SET DEADLOCK\_PRIORITY LOW | NORMAL | HIGH | -10..10} \\
+M3  & Error 1205 + retry & Let the application recover from being the victim & \code{TRY\dots CATCH}, \code{ROLLBACK}, re-run \\
+M4  & \code{LOCK\_TIMEOUT} & Bound the time a session waits for any lock & \code{SET LOCK\_TIMEOUT <ms>}, error 1222 \\
+M5  & Deadlock diagnostics & Capture the deadlock graph for analysis & \code{system\_health} XE, \code{.xdl}, trace flag 1222 \\
+M6  & Deadlock avoidance by design & Reduce the chance a cycle forms & access order, \code{UPDLOCK}, short transactions, indexes \\
+M7  & Read Committed Snapshot (RCSI) & Readers never wait for writers at READ COMMITTED & \code{ALTER DATABASE \dots\ SET READ\_COMMITTED\_SNAPSHOT ON} \\
+M8  & Snapshot Isolation (SI) & Transaction-wide consistent snapshot & \code{ALLOW\_SNAPSHOT\_ISOLATION ON} + \code{SET TRANSACTION ISOLATION LEVEL SNAPSHOT} \\
+M9  & Version store & Storage and cleanup of row versions & \code{tempdb} (or PVS with ADR), automatic cleanup \\
+M10 & \code{READCOMMITTEDLOCK} hint, DMVs & Opt out of RCSI per table; monitor versioning & table hint; \code{sys.dm\_tran\_version\_store\_space\_usage} \\
+M11 & Optimized locking, In-Memory OLTP & Newer lock-light / lock-free engines & SQL Server 2025 + ADR; memory-optimized tables \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\ReportBlock{M1 --- Deadlock Monitor (detection and resolution).}
+\emph{Content and purpose:} SQL Server lets deadlocks happen and then breaks them, exactly the ``detection and resolution'' strategy of the slides. \emph{How the engine runs it:} a background thread, the \textbf{Lock Monitor}, searches the waits-for graph of all waiting tasks every 5~seconds by default. When it finds a deadlock, the search interval drops (down to 100~ms) and goes back to 5~s once deadlocks stop. Besides lock waits, the graph also includes waits on worker threads, memory and parallel-query resources. \emph{How to use it:} nothing to enable; the monitor is always running.
+
+\ReportBlock{M2 --- Victim selection and \code{SET DEADLOCK\_PRIORITY}.}
+\emph{Content:} the slides only say ``one transaction is selected as victim''. SQL Server applies two rules in order: (1) the session with the \textbf{lowest deadlock priority} is the victim; (2) at equal priority, the transaction that is \textbf{cheapest to roll back} (least transaction log used) is the victim; a remaining tie is broken arbitrarily. \emph{Purpose:} protect important work (e.g.\ a radiologist's sign-off) and keep the rollback cost small. \emph{How to use it:} \code{SET DEADLOCK\_PRIORITY LOW} ($-5$), \code{NORMAL} (0, default), \code{HIGH} (5) or any integer from $-10$ to $10$, per session. This also answers the slides' \emph{starvation} problem: a session that is always sacrificed can be given a higher priority.
+
+\ReportBlock{M3 --- Error 1205 and retry.}
+The victim's transaction is rolled back by the engine and its client receives \textbf{Msg 1205} (``\dots\ has been chosen as the deadlock victim. Rerun the transaction.''). The other transaction continues. Because the victim did nothing wrong, the standard pattern is \code{BEGIN TRY \dots\ COMMIT \dots\ END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK; \dots\ END CATCH} plus an automatic retry when \code{ERROR\_NUMBER() = 1205}.
+
+\ReportBlock{M4 --- \code{SET LOCK\_TIMEOUT}.}
+\emph{Content and purpose:} by default a session waits for a lock forever (\code{-1}). \code{SET LOCK\_TIMEOUT n} makes any lock request give up after $n$~ms with \textbf{error 1222}. It does not detect deadlocks, but it limits how long a user waits and breaks long blocking chains (a timeout-based form of prevention, as mentioned in the slides). \emph{Important behaviour:} error 1222 cancels only the \emph{statement}; it does \emph{not} roll back the transaction, and rows already sent stay sent (observed in Section~\ref{sec:r5-2-queries}). The application must decide to roll back or retry.
+
+\ReportBlock{M5 --- Deadlock diagnostics.}
+Every deadlock is written as an \code{xml\_deadlock\_report} event by the built-in Extended Events session \textbf{\code{system\_health}} (always running). The XML lists the victim, every process with its \code{priority}, \code{logused}, wait resource and SQL text, and every resource with its owner and waiter. Saved as \code{.xdl}, it opens in SSMS as the graphical \textbf{Deadlock Graph}. Other options are trace flag 1222 (writes the same information to the error log), a custom Extended Events session, or the Deadlock graph event of SQL Profiler. Script: \code{01\_deadlock\_graph.sql}.
+
+\ReportBlock{M6 --- Avoiding deadlocks by design.}
+SQL Server does not implement wait-die or wound-wait, so avoidance is left to the developer: (a) access tables and rows in the \textbf{same order} in every transaction (e.g.\ always \code{Patients} then \code{MRI\_Scans}); (b) take the \textbf{update lock U} early with the \code{UPDLOCK} hint when a row is read and then updated, which prevents the S$\rightarrow$X \emph{conversion deadlock}, because U is not compatible with U; (c) keep transactions short with no user interaction inside; (d) create indexes so that statements lock only the rows they need (the lock footprint follows the execution plan, Section~\ref{sec:r5-2-queries}); (e) use RCSI so that readers no longer take part in deadlocks.
+
+\ReportBlock{M7 --- Read Committed Snapshot Isolation (RCSI).}
+\emph{Content:} a database option that changes how READ COMMITTED is implemented, with no change to the application code. \emph{How the engine runs it:} every UPDATE/DELETE copies the previous committed version of the row into the \textbf{version store} and links it from the row through a 14-byte versioning tag (transaction sequence number + pointer). A READ COMMITTED statement then takes \textbf{no S locks}: for each row it walks the version chain back to the version committed \emph{when the statement started}. Writers still take X locks between themselves (W--W conflicts are still serialised by locking). \emph{Purpose:} reads never block writes and writes never block reads, and there is still no dirty read. \emph{How to use it:} \code{ALTER DATABASE SpineMRI\_DBMS SET READ\_COMMITTED\_SNAPSHOT ON WITH ROLLBACK IMMEDIATE} (needs exclusive access). This is very close to the slides' \emph{multiversion 2PL}: readers read the committed version while a writer holds its lock, but without certify locks at commit time.
+
+\ReportBlock{M8 --- Snapshot Isolation (SI).}
+\emph{Content:} a separate isolation level. The snapshot is taken at the \textbf{first data access of the transaction}, so all reads of the transaction see the same committed state (transaction-level, whereas RCSI is statement-level). \emph{Concurrency rule:} if a SNAPSHOT transaction tries to modify a row that another transaction changed and committed after the snapshot started, the engine aborts it with \textbf{error 3960} (``first committer wins''). This plays the role of rule~1 of the slides' multiversion timestamp ordering: a write based on an outdated version is rejected, so no lost update is possible. \emph{How to use it:} \code{ALTER DATABASE \dots\ SET ALLOW\_SNAPSHOT\_ISOLATION ON}, then \code{SET TRANSACTION ISOLATION LEVEL SNAPSHOT} per session.
+
+\ReportBlock{M9 --- Version store and its cleanup.}
+Row versions live in \textbf{\code{tempdb}}; when Accelerated Database Recovery (ADR) is enabled they live in a \emph{Persistent Version Store} inside the user database instead. A background cleanup task removes versions that no active transaction can still need. This is the ``garbage collection'' of the slides, and also its side effect: extra storage and I/O, plus a long-running snapshot transaction can keep many versions alive.
+
+\ReportBlock{M10 --- Fine control and monitoring.}
+With RCSI on, the table hint \code{WITH (READCOMMITTEDLOCK)} makes one statement go back to locking reads (useful when a statement must see the very latest committed value). Version activity is visible in \code{sys.dm\_tran\_version\_store\_space\_usage} and \code{sys.dm\_tran\_active\_snapshot\_database\_transactions}.
+
+\ReportBlock{M11 --- Other engines (not used in our database).}
+SQL Server 2025 offers \emph{optimized locking} (transaction-ID locking and lock-after-qualification, built on ADR), which holds far fewer row locks for writers and therefore reduces blocking and deadlocks. Memory-optimized (In-Memory OLTP) tables use a lock-free, fully optimistic multi-version engine. Both are \textbf{off} in \code{SpineMRI\_DBMS} (\code{is\_optimized\_locking\_on = 0}, ADR off), so all results below show the classic behaviour.
+
+\begin{table}[H]
+\centering
+\caption{Chapter 5 slides versus SQL Server}
+\label{tab:r5-slides-vs-mssql}
+\scriptsize
+\begin{tabularx}{\textwidth}{l X X}
+\toprule
+\textbf{Topic} & \textbf{Slides} & \textbf{SQL Server} \\
+\midrule
+Deadlock strategy & Prevention, detection, avoidance (wait-die, wound-wait) & Detection and resolution only (Lock Monitor); avoidance left to design (M6) \\
+Victim choice & ``a transaction of the cycle'' & Lowest \code{DEADLOCK\_PRIORITY}, then least log used \\
+Starvation & Possible; wait-die/wound-wait avoid it & Controlled by \code{DEADLOCK\_PRIORITY} and application retry \\
+Waiting limit & --- & \code{LOCK\_TIMEOUT}, error 1222 \\
+Multiversion scheme & MV timestamp ordering; MV2PL with certify locks & RCSI (statement snapshot) and SI (transaction snapshot); writers keep X locks, no certify lock \\
+Write conflict on versions & Abort $T$ if $read\_TS(X_i) > TS(T)$ & SI: abort with error 3960 (first committer wins) \\
+Old versions & Garbage collection & Version store in \code{tempdb} / PVS, background cleanup \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% =====================================================================
+\section{Experimental Setup}
+\label{sec:r5-2-setup}
+
+\begin{itemize}
+  \item \textbf{Engine:} Microsoft SQL Server 2025 (RTM) 17.0.1000.7 Developer Edition, compatibility level 170; database restored from \code{data/SpineMRI\_DBMS.bak} (575 patients, 48{,}345 scans). ADR, optimized locking, RCSI and SNAPSHOT are OFF at the start.
+  \item \textbf{Two sessions:} each scenario has a Session A file and a Session B file in \code{scripts/sql/role5/}, opened in two SSMS windows. The session that holds locks contains a \code{WAITFOR DELAY} so the presenter can switch window. A third window may run \code{03\_lock\_monitor.sql}, which shows the waits-for edges (\code{sys.dm\_exec\_requests.blocking\_session\_id}) and the lock table (\code{sys.dm\_tran\_locks}).
+  \item \textbf{Measurements:} \emph{elapsed time} of the statement, and \emph{lock wait time} taken from \code{sys.dm\_exec\_session\_wait\_stats} (sum of \code{LCK\_M\_*} waits of the session, before/after the statement). The number of locks a query requests per table comes from \code{sys.dm\_db\_index\_operational\_stats} (\code{row\_lock\_count}, \code{page\_lock\_count}). For the reported numbers the same files were launched as parallel \code{sqlcmd} sessions (B started 2~s after A); raw logs are in \code{scripts/sql/role5/evidence/run\_logs/}. \code{99\_reset.sql} restores the data after each run.
+\end{itemize}
+
+% =====================================================================
+\section{Experiment 1 --- Deadlock, Victim Selection and Deadlock Graph}
+\label{sec:r5-2-deadlock}
+
+\textbf{Scenario.} Two staff members update the data that Query~1 returns, in opposite order. Session A (radiologist) updates patient \code{0001}, then the slice \code{ScanID = 1} of that patient; Session B (technician) updates slice \code{1}, then patient \code{0001}. Both use \code{TRY\dots CATCH} with \code{ROLLBACK}.
+
+\begin{SQLCode}
+-- Session A (01_deadlock_A.sql)                -- Session B (01_deadlock_B.sql)
+SET DEADLOCK_PRIORITY NORMAL;  -- run 2: LOW    SET DEADLOCK_PRIORITY NORMAL;
+BEGIN TRANSACTION;                              BEGIN TRANSACTION;
+UPDATE dbo.Patients SET DiagnosisStatus =       UPDATE dbo.MRI_Scans
+  'Under Review' WHERE PatientID = '0001';        SET AcquisitionDate = SYSDATETIME()
+WAITFOR DELAY '00:00:06';                         WHERE ScanID = 1;
+UPDATE dbo.MRI_Scans                            WAITFOR DELAY '00:00:02';
+  SET AcquisitionDate = SYSDATETIME()           UPDATE dbo.Patients SET DiagnosisStatus =
+  WHERE ScanID = 1;          -- waits for B       'Image Checked' WHERE PatientID = '0001';
+COMMIT TRANSACTION;                             COMMIT TRANSACTION;  -- waits for A
+\end{SQLCode}
+
+The lock monitor captured the cycle of the waits-for graph before the Lock Monitor broke it (run 1, session 62 = A, 63 = B):
+
+\begin{SQLCode}
+WaitingSession BlockedBy wait_type WaitMs WaitingStatement
+62             63        LCK_M_X   270    UPDATE [dbo].[MRI_Scans] ... WHERE [ScanID]=@1
+63             62        LCK_M_X   2236   UPDATE [dbo].[Patients]  ... WHERE [PatientID]=@2
+
+SessionID Resource ObjectName IndexName     KeyHash         Mode Status
+62        KEY      Patients   PK_Patients   (5f6f76815dbe)  X    GRANT
+62        KEY      MRI_Scans  PK_MRI_Scans  (8194443284a0)  X    WAIT
+63        KEY      MRI_Scans  PK_MRI_Scans  (8194443284a0)  X    GRANT
+63        KEY      Patients   PK_Patients   (5f6f76815dbe)  X    WAIT
+\end{SQLCode}
+
+The edges $62 \rightarrow 63$ and $63 \rightarrow 62$ form exactly the cycle of the slides' wait-for graph. Table~\ref{tab:r5-deadlock} gives the outcome of two runs, using the values read from the captured \code{xml\_deadlock\_report} events.
+
+\begin{table}[H]
+\centering
+\caption{Experiment 1: victim selection (values from the deadlock graph XML)}
+\label{tab:r5-deadlock}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+\multirow{2}{*}{\textbf{Run}} & \multicolumn{2}{c}{\textbf{Session A}} & \multicolumn{2}{c}{\textbf{Session B}} & \multirow{2}{*}{\textbf{Victim}} & \textbf{Cycle $\rightarrow$} \\
+ & priority & log used (bytes) & priority & log used (bytes) & & \textbf{resolved} \\
+\midrule
+1: NORMAL / NORMAL & 0  & 308 & 0 & 272 & B (error 1205) & 1.83 s \\
+2: LOW / NORMAL    & $-5$ & 308 & 0 & 272 & A (error 1205) & 1.21 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Analysis.} In run~1 both priorities are equal, so SQL Server applies the second rule and sacrifices B, which has written less log (272 vs.\ 308 bytes) and is cheaper to roll back. In run~2 A has a lower priority, and A becomes the victim \emph{even though it is the more expensive one to roll back}: priority is checked before cost. In both runs the victim received Msg 1205, its update was undone, and the survivor's blocked statement was granted and committed. The cycle was broken 1.2--1.8~s after it formed, which fits the 5-second search interval of the Lock Monitor. Figure~\ref{fig:r5-deadlock-tikz} redraws the graph of run~1 from \code{evidence/deadlock\_run1\_priority\_normal.xdl}; Figures~\ref{fig:r5-deadlock-ssms} and~\ref{fig:r5-deadlock-ssms-run2} are the graphs of run~1 and run~2 rendered by SSMS.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  proc/.style={ellipse, draw, thick, minimum width=36mm, minimum height=13mm, align=center, font=\small},
+  res/.style={rectangle, draw, thick, fill=black!4, minimum width=40mm, minimum height=13mm, align=center, font=\small},
+  lab/.style={font=\scriptsize, fill=white, inner sep=1pt},
+  >=Stealth]
+  \node[proc] (A) at (0,0) {Process 62 (Session A)\\ survivor, \code{logused} 308};
+  \node[proc] (B) at (9,0) {Process 63 (Session B)\\ \textbf{victim}, \code{logused} 272};
+  \node[res]  (P) at (4.5,2.2)  {Key lock \code{PK\_Patients}\\ \code{Patients} (0001)};
+  \node[res]  (S) at (4.5,-2.2) {Key lock \code{PK\_MRI\_Scans}\\ \code{MRI\_Scans} (ScanID 1)};
+  \draw[->, thick] (P) -- node[lab, above left]  {Owner mode: X} (A);
+  \draw[->, thick, dashed] (B) -- node[lab, above right] {Request mode: X} (P);
+  \draw[->, thick] (S) -- node[lab, below right] {Owner mode: X} (B);
+  \draw[->, thick, dashed] (A) -- node[lab, below left] {Request mode: X} (S);
+  \draw[red!70!black, very thick] ($(B)+(-1.9,-0.75)$) -- ($(B)+(1.9,0.75)$);
+  \draw[red!70!black, very thick] ($(B)+(-1.9,0.75)$) -- ($(B)+(1.9,-0.75)$);
+\end{tikzpicture}
+\caption{Deadlock graph of run 1, redrawn from the \code{xml\_deadlock\_report} of \code{system\_health}. Solid arrows: lock owned; dashed arrows: lock requested. The two requests close the cycle; the crossed process is the victim.}
+\label{fig:r5-deadlock-tikz}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \rolefivefig{image/role_5/role5_deadlock_graph_ssms.png}{\textwidth}{SSMS Deadlock Graph: open scripts/sql/role5/evidence/deadlock\_run1\_priority\_normal.xdl in SSMS}
+  \caption{Deadlock Graph rendered by SSMS from \code{deadlock\_run1\_priority\_normal.xdl}. Ovals are processes (sessions), rectangles are the locked resources (key locks on \code{PK\_Patients} and \code{PK\_MRI\_Scans}). An arrow from a resource to a process means ``Owner Mode: X'' (the process holds it); an arrow from a process to a resource means ``Request Mode: X'' (the process waits for it). Process 63 (Session B, Log Used 272) is crossed out as the victim; process 62 (Session A, Log Used 308) survives; both have Deadlock priority 0.}
+  \label{fig:r5-deadlock-ssms}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \rolefivefig{image/role_5/role5_deadlock_graph_ssms_run2_low.png}{\textwidth}{SSMS Deadlock Graph of run 2: open scripts/sql/role5/evidence/deadlock\_run2\_A\_priority\_low.xdl in SSMS}
+  \caption{Deadlock Graph of run 2 (\code{deadlock\_run2\_A\_priority\_low.xdl}): the same cycle, but Session A now runs with \code{SET DEADLOCK\_PRIORITY LOW}. Process 62 (Session A, Deadlock priority $-5$, Log Used 308) is crossed out as the victim, although it is the \emph{more} expensive transaction to roll back; process 63 (Session B, priority 0, Log Used 272) survives. Priority is evaluated before rollback cost.}
+  \label{fig:r5-deadlock-ssms-run2}
+\end{figure}
+
+% =====================================================================
+\section{Experiment 2 --- Lock Wait Time: Classic Locking versus RCSI}
+\label{sec:r5-2-rcsi}
+
+\textbf{Scenario.} Session A updates the diagnosis of patient \code{0001} and keeps the transaction open for 10~s (X lock held). Session B reads the same row at READ COMMITTED. The same pair of scripts is run three times with RCSI OFF and three times with RCSI ON (\code{02\_rcsi\_0\_enable\_row\_versioning.sql}).
+
+\begin{SQLCode}
+-- Session A (02_rcsi_A_writer.sql)
+BEGIN TRANSACTION;
+    UPDATE dbo.Patients SET DiagnosisStatus = 'Revised' WHERE PatientID = '0001';
+    WAITFOR DELAY '00:00:10';
+COMMIT TRANSACTION;
+
+-- Session B (02_rcsi_B_reader.sql)
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+SELECT @v = DiagnosisStatus FROM dbo.Patients WHERE PatientID = '0001';
+-- + elapsed time and LCK_M_* wait time from sys.dm_exec_session_wait_stats
+\end{SQLCode}
+
+\begin{table}[H]
+\centering
+\caption{Experiment 2: lock wait time of the reader, same scenario, 3 runs each}
+\label{tab:r5-lockwait}
+\small
+\begin{tabular}{lccccl}
+\toprule
+\textbf{Mode} & \textbf{Run} & \textbf{Value read} & \textbf{Elapsed (ms)} & \textbf{Lock wait (ms)} & \textbf{Wait type} \\
+\midrule
+\multirow{3}{*}{Locking READ COMMITTED (RCSI OFF)} & 1 & \code{Revised} & 7{,}931 & 7{,}930 & \code{LCK\_M\_S} \\
+ & 2 & \code{Revised} & 7{,}931 & 7{,}930 & \code{LCK\_M\_S} \\
+ & 3 & \code{Revised} & 7{,}953 & 7{,}953 & \code{LCK\_M\_S} \\
+\midrule
+\multirow{3}{*}{READ COMMITTED SNAPSHOT (RCSI ON)} & 1 & \code{Confirmed} & 0 & 0 & --- \\
+ & 2 & \code{Confirmed} & 0 & 0 & --- \\
+ & 3 & \code{Confirmed} & 0 & 0 & --- \\
+\midrule
+\textbf{Average locking / RCSI} & & & \textbf{7{,}938 / 0} & \textbf{7{,}938 / 0} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Analysis.} With classic locking, B's S request on key \code{(5f6f76815dbe)} is incompatible with A's X lock; the monitor shows \code{X GRANT} for A and \code{S WAIT} for B, and B waits until A commits (about 8~s, because B started 2~s after A), then reads the new value \code{Revised}. With RCSI the lock table during the same moment contains \emph{only} A's \code{IX/IX/X} locks --- B requests no S lock at all --- and \code{sys.dm\_tran\_version\_store\_space\_usage} reports \textbf{8 pages (64~KB)} of row versions. B immediately reads \code{Confirmed}, the last \emph{committed} version taken from the version store. Neither mode ever returns an uncommitted value. The trade-off: RCSI removes the waiting but may return a version that is a few seconds older.
+
+\textbf{Snapshot Isolation (\code{02\_snapshot\_B\_reader.sql}).} A SNAPSHOT transaction read patient \code{0001} at the start (0~ms, \code{Confirmed}), waited while A committed \code{Revised}, and read again: the second read still returned \code{Confirmed}, while the committed value was already \code{Revised}. This shows the transaction-level snapshot of SI, versus the statement-level snapshot of RCSI.
+
+\textbf{Update conflict (\code{02\_snapshot\_C\_update\_conflict.sql}).} A SNAPSHOT transaction read the row, A updated and committed it, and the snapshot transaction then tried to update it. SQL Server refused with \textbf{error 3960} (``Snapshot isolation transaction aborted due to update conflict \dots''). Under versioning, a write--write conflict is therefore resolved by aborting rather than by waiting, and no lost update can happen.
+
+% =====================================================================
+\section{How SQL Server Handles Q1, Q2 and Q3 under Concurrent Writes}
+\label{sec:r5-2-queries}
+
+This experiment applies the mechanisms above to the three canonical queries. Session A (\code{04\_queries\_A\_writer.sql}) re-labels one slice of \textbf{patient \code{0002}} (\code{ScanID = 80}) and keeps its X locks for 10~s before rolling back. Patient \code{0002} is \emph{not} in the result of Q1 or Q2 (which ask for patient \code{0001}) and is one of the 48{,}345 rows that Q3 compares. Session B runs Q1, Q2 or Q3 unchanged (\code{04\_queries\_B\_Q1/Q2/Q3.sql}). Every combination of two index states (\emph{PK only}, as in the backup; \emph{PK + covering}, with Role~2's index \code{IX\_MRIScans\_PatientID\_Covering (PatientID, SeriesDescription) INCLUDE (ImagePath)}) and two modes (locking, RCSI) was run, each query once alone (lock footprint) and once against the writer (blocking).
+
+\begin{table}[H]
+\centering
+\caption{Access path chosen by the optimizer (estimated plans, \code{SHOWPLAN\_TEXT})}
+\label{tab:r5-plans}
+\scriptsize
+\begin{tabularx}{\textwidth}{l X X}
+\toprule
+\textbf{Query} & \textbf{PK only} & \textbf{PK + covering index} \\
+\midrule
+Q1 & Nested Loops: Clustered Index \textbf{Seek} \code{PK\_Patients} + Clustered Index \textbf{Scan} \code{PK\_MRI\_Scans} (filter \code{PatientID='0001'}) & Nested Loops: Clustered Index Seek \code{PK\_Patients} + Index \textbf{Seek} \code{IX\_MRIScans\_PatientID\_Covering} \\
+Q2 & Same as Q1, plus the \code{LIKE '\%T2\%SAG\%'} filter in the scan & Same as Q1; \code{LIKE} becomes a residual predicate of the seek \\
+Q3 & Parallel Hash Match: Clustered Index \textbf{Scan} \code{PK\_Image\_Features} + Clustered Index \textbf{Scan} \code{PK\_MRI\_Scans}, then Top-N Sort & Same, but \code{MRI\_Scans} is read by an Index \textbf{Scan} of the narrower covering index \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Concurrency behaviour of the canonical queries while a writer holds X locks on one row of patient 0002. Locks requested by the query alone at locking READ COMMITTED: r = row locks, p = page locks, (P) = \code{Patients}, (F) = \code{Image\_Features}. Under RCSI every query requested 0 locks. Times in ms.}
+\label{tab:r5-queries}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llllrrrr}
+\toprule
+\multirow{2}{*}{\textbf{Index}} & \multirow{2}{*}{\textbf{Q}} & \multicolumn{2}{c}{\textbf{Locks requested}} & \multicolumn{2}{c}{\textbf{Locking RC}} & \multicolumn{2}{c}{\textbf{RCSI}} \\
+ & & \textbf{MRI\_Scans} & \textbf{Other table} & \textbf{Elapsed} & \textbf{Lock wait} & \textbf{Elapsed} & \textbf{Lock wait} \\
+\midrule
+\multirow{3}{*}{PK only}
+ & Q1 & 1{,}874 p & 1 r + 1 p (P) & 7{,}976 & 7{,}969 & 5  & 0 \\
+ & Q2 & 1{,}874 p & 1 r + 1 p (P) & 7{,}982 & 7{,}976 & 7  & 0 \\
+ & Q3 & 1{,}903 p & 1 r + 3{,}780 p (F) & 7{,}983 & 7{,}972 & 16 & 0 \\
+\midrule
+\multirow{3}{*}{PK + covering}
+ & Q1 & 65 r + 3 p & 1 r + 1 p (P) & 1 & 0 & 1  & 0 \\
+ & Q2 & 65 r + 3 p & 1 r + 1 p (P) & 1 & 0 & 1  & 0 \\
+ & Q3 & 1{,}588 p & 1 r + 3{,}780 p (F) & 7{,}993 & 7{,}982 & 17 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{How SQL Server decides, query by query.}
+
+\begin{itemize}
+  \item \textbf{The optimizer chooses the plan by cost, and the plan decides the lock footprint.} The Query Optimizer does not consider concurrency; it picks the cheapest access path (Table~\ref{tab:r5-plans}). At run time the storage engine then chooses the \textbf{lock granularity from the access method}: for a \emph{scan} it requests \textbf{page locks} (one lock per 8~KB page instead of one per row, e.g.\ 1{,}874 page locks and 0 row locks on \code{MRI\_Scans}), for a \emph{seek} it requests \textbf{row (key) locks} plus intent locks on the few pages visited (65 key locks + 3 page locks). Under locking READ COMMITTED each S lock is released right after the row/page is read, so no lock escalation occurs even for Q3.
+
+  \item \textbf{Q1 and Q2 with PK only: blocked by a patient they do not return.} Without an index on \code{MRI\_Scans.PatientID}, Q1 and Q2 must scan the whole table and test every row. When the scan reaches the page of \code{ScanID 80}, its page S lock conflicts with the writer's IX/X locks, so the query waits $\approx$8~s for a row of patient \code{0002}. With \code{LOCK\_TIMEOUT 3000} (\code{01\_lock\_timeout\_B\_Q1.sql}) the same Q1 had already streamed all 65 rows of patient \code{0001} (they are on the first pages) and then failed with error 1222 after 3{,}008~ms: SQL Server cannot know there are no more \code{0001} rows until the scan is finished.
+
+  \item \textbf{Q1 and Q2 with the covering index: no blocking at all, even under locking.} The seek visits only the key range \code{PatientID = '0001'} of the index, so it never touches the locked row of patient \code{0002}. A good index therefore reduces blocking and deadlock risk as much as it reduces I/O. For Q2 the \code{LIKE '\%T2\%SAG\%'} test is a residual predicate: the 65 keys of the patient are still locked and read, then 15 rows are returned.
+
+  \item \textbf{Q3: always blocked under locking.} Q3 must compare the reference vector with every other slice, so both tables are scanned completely (3{,}780 page locks on \code{Image\_Features}, 1{,}588--1{,}903 on \code{MRI\_Scans}). Any writer anywhere in \code{MRI\_Scans} --- here a re-label that also changes the covering index key --- blocks it. Adding indexes cannot help a query that needs all rows; only versioning can.
+
+  \item \textbf{RCSI: zero locks, zero waiting, for all three queries.} With RCSI ON the three queries requested \textbf{no row or page locks} on any table and never waited (0~ms lock wait in both index states), while still returning only committed data. This also removes the readers from every possible deadlock: a statement that holds no S lock cannot be part of a waits-for cycle.
+
+  \item \textbf{Deadlock exposure.} At locking READ COMMITTED a reader holds at most the lock of the current row/page, so Q1--Q3 alone rarely form a cycle. Deadlocks appear between \emph{writers} that maintain the data the queries read, as in Experiment~1 (the record and a slice of patient \code{0001}, i.e.\ Q1's result). SQL Server resolves them with M1--M3; the design rules of M6 prevent them.
+\end{itemize}
+
+% =====================================================================
+\section{Summary and Recommendations}
+\label{sec:r5-2-summary}
+
+\begin{itemize}
+  \item SQL Server resolves deadlocks by \textbf{detection}: the Lock Monitor found every cycle within 1.2--1.8~s and rolled back the victim with Msg 1205. The victim is chosen by \code{DEADLOCK\_PRIORITY} first and log cost second, as both runs show; this is the tool to protect critical transactions and to avoid starvation.
+  \item \textbf{RCSI} cut the reader's lock wait from 7{,}938~ms (average of 3 runs) to 0~ms in the same scenario, for a version store cost of 64~KB. For the canonical queries it removed all S locks (up to 5{,}683 page locks for Q3) and all waiting. It is the recommended setting for this read-heavy clinical database (doctors browsing reports and images), with \code{READCOMMITTEDLOCK} for the few statements that need the very latest value.
+  \item \textbf{Snapshot Isolation} is suited to long reports that need one consistent picture across several statements; the application must retry on error 3960.
+  \item For writers: access \code{Patients} before \code{MRI\_Scans} in every transaction, keep transactions short, retry on 1205, use \code{LOCK\_TIMEOUT} where users must not wait indefinitely, and index the foreign key \code{MRI\_Scans.PatientID} so that Q1/Q2 lock 65 keys instead of 1{,}874 pages.
+\end{itemize}
