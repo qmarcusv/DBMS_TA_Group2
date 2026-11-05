@@ -33,10 +33,10 @@ The SQL Server Lock Manager maintains active lock state entirely within system m
     \item \textbf{FIFO Wait Queue and Starvation Prevention:} When a transaction requests a lock mode incompatible with currently granted locks, its thread descriptor is placed into a First-In, First-Out (FIFO) wait queue. The thread yields CPU scheduling and transitions to a \code{SUSPENDED} state. When the active holder commits, the Lock Manager dequeues the waiting request in FIFO sequence, preventing writer starvation from an unending stream of concurrent shared readers.
 \end{itemize}
 
-\begin{figure}[htbp]
+\begin{figure}[H]
     \centering
-    % \includegraphics[width=0.85\textwidth]{image/fig_lock_manager_architecture.png}
-    \fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.1 Placeholder: SQL Server Lock Manager In-Memory Structure]}\\[1.5mm] \footnotesize Recommended Source: Microsoft Learn -- \textsl{SQL Server Transaction Locking and Row Versioning Guide} / Kalen Delaney, \textsl{SQL Server Internals}. Diagram showing Lock Hash Table Buckets pointing to Lock Resource Heads ($\approx$96B) and granted/waiting Lock Owner chains ($\approx$64B).}}
+    \includegraphics[width=0.85\textwidth]{image/fig_lock_manager_architecture.png}
+    %\fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.1 Placeholder: SQL Server Lock Manager In-Memory Structure]}\\[1.5mm] \footnotesize Recommended Source: Microsoft Learn -- \textsl{SQL Server Transaction Locking and Row Versioning Guide} / Kalen Delaney, \textsl{SQL Server Internals}. Diagram showing Lock Hash Table Buckets pointing to Lock Resource Heads ($\approx$96B) and granted/waiting Lock Owner chains ($\approx$64B).}}
     \caption{Internal Architecture of the Microsoft SQL Server In-Memory Lock Manager}
     \label{fig:lock_manager_arch}
 \end{figure}
@@ -55,10 +55,10 @@ To balance concurrency throughput against lock memory overhead across both point
     \item \textbf{RID (Row Identifier):} Fine-grained lock addressing a single record on an unindexed heap table using a \code{FileID:PageID:SlotNumber} tuple.
 \end{itemize}
 
-\begin{figure}[htbp]
+\begin{figure}[H]
     \centering
-    % \includegraphics[width=0.75\textwidth]{image/fig_granularity_hierarchy.png}
-    \fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.2 Placeholder: Multiple Granularity Locking (MGL) Hierarchy Tree]}\\[1.5mm] \footnotesize Recommended Source: Elmasri et al., \textsl{Fundamentals of Database Systems}, Chapter 5, Slide 52 / Figure 21.8. Tree diagram showing granularity traversal from Database ($db$) down through Table/File ($f$), Pages ($p$), and Records/Keys ($r$).}}
+    \includegraphics[width=0.75\textwidth]{image/fig_granularity_hierarchy.png}
+    %\fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.2 Placeholder: Multiple Granularity Locking (MGL) Hierarchy Tree]}\\[1.5mm] \footnotesize Recommended Source: Elmasri et al., \textsl{Fundamentals of Database Systems}, Chapter 5, Slide 52 / Figure 21.8. Tree diagram showing granularity traversal from Database ($db$) down through Table/File ($f$), Pages ($p$), and Records/Keys ($r$).}}
     \caption{Multiple Granularity Tree Hierarchy in Database Locking (adapted from Elmasri et al.)}
     \label{fig:mgl_hierarchy}
 \end{figure}
@@ -80,7 +80,7 @@ If locks were applied solely at the row level, a transaction executing an admini
     \item \textbf{Update with Intention Exclusive (UIX):} Applied at higher levels during update scans on descendant records.
 \end{itemize}
 
-\begin{table}[htbp]
+\begin{table}[H]
 \centering
 \small
 \caption{Hierarchical Lock Compatibility Matrix in Microsoft SQL Server}
@@ -144,10 +144,10 @@ WHERE p.PatientID = '0001';
     \end{itemize}
 \end{itemize}
 
-\begin{figure}[htbp]
+\begin{figure}[H]
     \centering
-    % \includegraphics[width=0.88\textwidth]{image/fig_q1_dmv_locks.png}
-    \fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.3 Placeholder: SSMS Diagnostic Lock Table for Query 1]}\\[1.5mm] \footnotesize Recommended Source: SSMS query execution screenshot of \code{sys.dm\_tran\_locks} from Case 1 Option A in \code{05\_concurrency\_control\_role5.sql}. Displays the lock hierarchy summary: \code{DATABASE} (\code{S}), \code{OBJECT} (\code{IS} on \code{Patients} and \code{MRI\_Scans}), and \code{KEY} (\code{S} on \code{PK\_Patients} and \code{PK\_MRI\_Scans}) during an open transaction.}}
+    \includegraphics[width=0.88\textwidth]{image/fig_q1_dmv_locks.png}
+    %\fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.3 Placeholder: SSMS Diagnostic Lock Table for Query 1]}\\[1.5mm] \footnotesize Recommended Source: SSMS query execution screenshot of \code{sys.dm\_tran\_locks} from Case 1 Option A in \code{05\_concurrency\_control\_role5.sql}. Displays the lock hierarchy summary: \code{DATABASE} (\code{S}), \code{OBJECT} (\code{IS} on \code{Patients} and \code{MRI\_Scans}), and \code{KEY} (\code{S} on \code{PK\_Patients} and \code{PK\_MRI\_Scans}) during an open transaction.}}
     \caption{Dynamic Management View (\code{sys.dm\_tran\_locks}) Lock Verification for Query 1 under \code{REPEATABLE READ}}
     \label{fig:q1_dmv_locks}
 \end{figure}
@@ -171,10 +171,10 @@ WHERE p.PatientID = '0001'
     \item \textbf{Phantom Prevention under SERIALIZABLE:} Under \code{SERIALIZABLE}, the Lock Manager applies \textbf{\code{RangeS-S}} key-range locks covering the index key interval for \code{PatientID = '0001'} on the B-Tree leaf. If Session 2 attempts to insert a new scan row for patient \code{'0001'}, the engine requests a \code{RangeI-N} lock that conflicts with \code{RangeS-S}. Session 2 is blocked immediately until Session 1 finishes, eliminating phantom reads.
 \end{itemize}
 
-\begin{figure}[htbp]
+\begin{figure}[H]
     \centering
-    % \includegraphics[width=0.88\textwidth]{image/fig_q2_phantom_lock.png}
-    \fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.4 Placeholder: SSMS Key-Range Lock \& Blocked Session Monitor for Query 2]}\\[1.5mm] \footnotesize Recommended Source: SSMS query screenshot of \code{sys.dm\_tran\_locks} and \code{sys.dm\_os\_waiting\_tasks} from Case 2 in \code{05\_concurrency\_control\_role5.sql}. Displays Session 1 holding \code{RangeS-S} locks on B-Tree keys while Session 2 is blocked with wait type \code{LCK\_M\_RANGEI\_N} on \code{MRI\_Scans}.}}
+    \includegraphics[width=0.88\textwidth]{image/fig_q2_phantom_lock.png}
+    %\fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.4 Placeholder: SSMS Key-Range Lock \& Blocked Session Monitor for Query 2]}\\[1.5mm] \footnotesize Recommended Source: SSMS query screenshot of \code{sys.dm\_tran\_locks} and \code{sys.dm\_os\_waiting\_tasks} from Case 2 in \code{05\_concurrency\_control\_role5.sql}. Displays Session 1 holding \code{RangeS-S} locks on B-Tree keys while Session 2 is blocked with wait type \code{LCK\_M\_RANGEI\_N} on \code{MRI\_Scans}.}}
     \caption{Key-Range Locking (\code{RangeS-S}) and Phantom Insertion Blocking under \code{SERIALIZABLE} in Query 2}
     \label{fig:q2_phantom_lock}
 \end{figure}
@@ -205,10 +205,10 @@ ORDER BY EuclideanDistance ASC;
     \item \textbf{Lock Escalation Exposure on the Ingested Clinical Database:} On the full production database of 48,345 scans, if this query is executed within an open transaction under \code{REPEATABLE READ} or \code{SERIALIZABLE}, the engine must retain shared locks on every accessed page. When the number of accumulated locks crosses the 5,000 threshold, the Lock Manager triggers \textbf{Lock Escalation}, converting thousands of fine-grained page/key locks into a single \textbf{\code{OBJECT:\,S}} table lock. This reclaims memory in the buffer pool, but blocks all concurrent transactional modifications (\code{INSERT}, \code{UPDATE}) on the entire \code{Image\_Features} table.
 \end{itemize}
 
-\begin{figure}[htbp]
+\begin{figure}[H]
     \centering
-    % \includegraphics[width=0.88\textwidth]{image/fig_q3_execution_escalation.png}
-    \fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.5 Placeholder: SSMS Execution Plan and Lock Escalation Event for Query 3]}\\[1.5mm] \footnotesize Recommended Source: SSMS graphical execution plan showing the 48,345-row Clustered Index Scan on \code{Image\_Features} with Top-N Sort, combined with a \code{sys.dm\_tran\_locks} screenshot showing escalated \code{OBJECT:\,S} lock from Case 3 in \code{05\_concurrency\_control\_role5.sql}.}}
+    \includegraphics[width=0.88\textwidth]{image/fig_q3_execution_escalation.png}
+    %\fbox{\parbox[c][3.8cm][c]{0.88\textwidth}{\centering \small \textbf{[Figure 2.5 Placeholder: SSMS Execution Plan and Lock Escalation Event for Query 3]}\\[1.5mm] \footnotesize Recommended Source: SSMS graphical execution plan showing the 48,345-row Clustered Index Scan on \code{Image\_Features} with Top-N Sort, combined with a \code{sys.dm\_tran\_locks} screenshot showing escalated \code{OBJECT:\,S} lock from Case 3 in \code{05\_concurrency\_control\_role5.sql}.}}
     \caption{Execution Plan Operators and Lock Escalation Footprint for Query 3 Vector Distance Search}
     \label{fig:q3_escalation}
 \end{figure}
@@ -216,17 +216,17 @@ ORDER BY EuclideanDistance ASC;
 \section{Synthesis: ANSI SQL Isolation Levels vs. MSSQL Engine Mechanics}
 Table~\ref{tab:ansi_mssql_matrix} synthesizes theoretical isolation levels, potential data anomalies, and Microsoft SQL Server's concrete engine-level locking behavior across the clinical imaging workload.
 
-\begin{table}[htbp]
+\begin{table}[H]
 \centering
 \small
 \caption{ANSI SQL Isolation Levels and Concrete MSSQL Engine Locking Behaviors}
 \label{tab:ansi_mssql_matrix}
-\begin{tabularx}{\textwidth}{@{}lcccl@{}}
+\begin{tabularx}{\textwidth}{@{}l ccc >{\raggedright\arraybackslash}X@{}}
 \toprule
-\textbf{Isolation Level} & \textbf{Dirty Read} & \textbf{Non-repeatable Read} & \textbf{Phantom Read} & \textbf{Concrete MSSQL Engine Locking Behavior} \\ \midrule
-\textbf{READ UNCOMMITTED} & Yes & Yes & Yes & Executes reads without acquiring $S$-locks; ignores active $X$-locks held by writers. \\
-\textbf{READ COMMITTED} & No & Yes & Yes & Acquires fine-grained $S$-locks, but releases them immediately after statement execution. \\
-\textbf{REPEATABLE READ} & No & No & Yes & Retains fine-grained $S$-locks on accessed keys/pages until transaction termination. \\
-\textbf{SERIALIZABLE} & No & No & No & Applies \textbf{Key-Range Locks} (\code{RangeS-S}) on B-Tree intervals to prevent phantom insertions. \\ \bottomrule
+\textbf{Isolation Level} & \textbf{\shortstack{Dirty\\Read}} & \textbf{\shortstack{Non-repeatable\\Read}} & \textbf{\shortstack{Phantom\\Read}} & \textbf{Concrete MSSQL Engine Locking Behavior} \\ \midrule
+\textbf{READ UNCOMMITTED} & Yes & Yes & Yes & Executes reads without acquiring $S$-locks; ignores active $X$-locks held by concurrent writers. \\ \addlinespace[4pt]
+\textbf{READ COMMITTED}   & No  & Yes & Yes & Acquires fine-grained $S$-locks, but releases them immediately after statement execution. \\ \addlinespace[4pt]
+\textbf{REPEATABLE READ}  & No  & No  & Yes & Retains fine-grained $S$-locks on accessed keys/pages until transaction termination. \\ \addlinespace[4pt]
+\textbf{SERIALIZABLE}     & No  & No  & No  & Applies \textbf{Key-Range Locks} (\code{RangeS-S}) on B-Tree intervals to prevent phantom insertions. \\ \bottomrule
 \end{tabularx}
 \end{table}

@@ -1,16 +1,27 @@
 -- ============================================================================
 -- Course: Database Management Systems (CO3021) - Semester 261
 -- Group: Group 02
--- Role: Role 5.1 (Concurrency Control, Lock Manager Internals, Isolation Levels)
--- Database Engine: Microsoft SQL Server 2025
 -- Target Database: SpineMRI_DBMS (575 Patients, 48,345 Scans, 48,345 Features)
+-- Target Engine: Microsoft SQL Server 2025
 -- 
--- WORKLOAD-DRIVEN CONCURRENCY CONTROL BENCHMARK
--- Organized sequentially by CANONICAL QUERY CASE (Case 1, Case 2, Case 3, Case 4).
--- For each case, the script clearly separates:
---   - [SESSION 1]: Workload / Holding Transaction (Query Window 1)
---   - [SESSION 2]: Concurrent Access / Conflict Attempt (Query Window 2)
---   - [MONITOR]: Dynamic Management View (DMV) Lock Inspector (Query Window 3)
+-- ROLE DIVISION SPECIFICATION:
+-- ----------------------------------------------------------------------------
+-- [PART I: ROLE 5.1 MANDATORY BENCHMARK]
+--   Scope: Pessimistic Concurrency Control, Strict 2PL, Lock Manager Internals,
+--          The 3 Read Phenomena (Dirty Read, Non-Repeatable Read, Phantom Read),
+--          Key-Range Locks (SERIALIZABLE), and Lock Escalation (>5,000 locks).
+--   Mapping:
+--     - Case 1 (Canonical Query 1): Non-Repeatable Read & Clustered Index Seek
+--     - Case 2 (Canonical Query 2): Phantom Read & Key-Range Locks (RangeS-S)
+--     - Case 3 (Canonical Query 3): Lock Escalation on 48,345 Slices (OBJECT: S)
+--     - Case 4 (Clinical Update):   Dirty Read Anomaly (READ UNCOMMITTED vs READ COMMITTED)
+--   Outputs: Figures 2.3, 2.4, 2.5 and Table 2.2 in Chapter 6 Technical Report.
+-- 
+-- [PART II: ROLE 5.2 REFERENCE BENCHMARK]
+--   Scope: Deadlock Cycle Detection (Msg 1205), SET DEADLOCK_PRIORITY,
+--          Deadlock Graph (.xdl / system_health), MVCC / RCSI, and tempdb Version Store.
+--   NOTE: Provided here for full group coordination. Member 5.1 DOES NOT need
+--         to run or document Part II in Chapter 6!
 -- ============================================================================
 
 USE SpineMRI_DBMS;
@@ -18,18 +29,25 @@ GO
 
 
 -- ============================================================================
--- CASE 1: CANONICAL QUERY 1 (Patient Point Lookup & Scan Retrieval)
+-- ============================================================================
+-- PART I: ROLE 5.1 MANDATORY SCOPE (READ PHENOMENA & PESSIMISTIC LOCKING)
+-- ============================================================================
+-- ============================================================================
+
+
+-- ============================================================================
+-- CASE 1 [ROLE 5.1]: CANONICAL QUERY 1 (NON-REPEATABLE READ BENCHMARK)
 -- Clinical Context: Single-patient clinical narrative and MRI slice lookup.
 -- Engine Concept: Clustered Index Seek on PK_Patients, fine-grained KEY: S locks,
---                 and lock lifecycle comparison:
---                 - READ COMMITTED: S-locks dropped immediately after statement.
---                 - REPEATABLE READ: S-locks held until transaction COMMIT.
+--                 and Non-Repeatable Read demonstration:
+--                 - READ COMMITTED: S-locks dropped immediately -> Row can be modified.
+--                 - REPEATABLE READ: S-locks held until COMMIT -> Prevents Non-Repeatable Read.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- [CASE 1 - STEP 1]: Open Transaction in [SESSION 1] (Query Window 1)
 -- ----------------------------------------------------------------------------
-/* Execute this in Query Window 1: */
+/* Execute in Query Window 1: */
 SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 BEGIN TRANSACTION;
 
@@ -47,14 +65,9 @@ WHERE p.PatientID = '0001';
 
 -- ----------------------------------------------------------------------------
 -- [CASE 1 - STEP 2]: Inspect Locks in [MONITOR WINDOW] (Query Window 3)
--- -> USE THIS CAPTURE FOR FIGURE 2.3 IN YOUR TECHNICAL REPORT!
+-- -> USE THIS CAPTURE FOR FIGURE 2.3 IN CHAPTER 6!
 -- ----------------------------------------------------------------------------
-/* 
-   OPTION A (RECOMMENDED FOR FIGURE 2.3 - Hierarchical MGL Order):
-   Orders locks in true Top-Down Multiple Granularity Locking (MGL) hierarchy:
-   DATABASE -> OBJECT (IS) -> PAGE (IS) -> KEY (S)
-   Correctly resolves OBJECT table names for publication quality!
-*/
+/* Execute in Query Window 3: */
 SELECT 
     tl.resource_type AS [Resource],
     tl.request_mode AS [LockMode],
@@ -92,56 +105,28 @@ ORDER BY
     [EntityName] ASC,
     [LockCount] ASC;
 
-/* 
-   OPTION B (Granular View - Filter by your Session 1 SPID, e.g., 53):
-   Replace 53 with your actual SPID from Window 1:
-*/
-/*
-SELECT 
-    tl.request_session_id AS [SPID],
-    tl.resource_type AS [Resource],
-    tl.request_mode AS [LockMode],
-    tl.request_status AS [Status],
-    OBJECT_NAME(p.object_id) AS [TableName],
-    i.name AS [IndexName]
-FROM sys.dm_tran_locks tl
-LEFT JOIN sys.partitions p 
-    ON tl.resource_associated_entity_id = p.hobt_id
-LEFT JOIN sys.indexes i 
-    ON p.object_id = i.object_id AND p.index_id = i.index_id
-WHERE tl.resource_database_id = DB_ID('SpineMRI_DBMS')
-  AND tl.request_session_id = 53 -- Replace with your Session 1 SPID!
-ORDER BY tl.resource_type;
-*/
-
--- [EXPECTED OBSERVATION FOR FIGURE 2.3]:
--- 1. TableName = Patients  | Resource = OBJECT | LockMode = IS (Intention Shared)
--- 2. TableName = Patients  | Resource = KEY    | LockMode = S  | IndexName = PK_Patients
--- 3. TableName = MRI_Scans | Resource = OBJECT | LockMode = IS
--- 4. TableName = MRI_Scans | Resource = KEY    | LockMode = S  (for scan rows of Patient 0001)
-
 
 -- ----------------------------------------------------------------------------
 -- [CASE 1 - STEP 3]: Concurrent Conflict Attempt in [SESSION 2] (Query Window 2)
 -- ----------------------------------------------------------------------------
-/* Execute this in Query Window 2 while Session 1 is still open: */
+/* Execute in Query Window 2 while Session 1 is open: */
 /*
     USE SpineMRI_DBMS;
-    -- This update requires an Exclusive KEY: X lock, which conflicts with Session 1's KEY: S:
+    -- Requires Exclusive KEY: X lock, which conflicts with Session 1's KEY: S:
     UPDATE Patients 
     SET PatientName = 'Patient 0001 (Modified Name)' 
     WHERE PatientID = '0001';
-    -- [OBSERVE]: Session 2 HANGS in a blocked state waiting for Session 1 to release locks!
+    -- [OBSERVE]: Session 2 BLOCKS waiting for Session 1 to release KEY: S!
 */
 
 
 -- ----------------------------------------------------------------------------
 -- [CASE 1 - STEP 4]: Complete Session 1 in [SESSION 1] (Query Window 1)
 -- ----------------------------------------------------------------------------
-/* Back in Query Window 1, release the lock: */
+/* Back in Query Window 1, release the transaction: */
 COMMIT TRANSACTION;
 
--- [OBSERVE]: As soon as Session 1 commits, Session 2 immediately unblocks and succeeds!
+-- [OBSERVE]: Session 2 immediately unblocks and returns "(1 row affected)".
 -- Revert the patient name back to clean state:
 UPDATE Patients SET PatientName = 'Patient 0001' WHERE PatientID = '0001';
 GO
@@ -149,7 +134,7 @@ GO
 
 
 -- ============================================================================
--- CASE 2: CANONICAL QUERY 2 (Filtered T2 Sagittal Scan Retrieval & Key-Range)
+-- CASE 2 [ROLE 5.1]: CANONICAL QUERY 2 (PHANTOM READ & KEY-RANGE LOCKS)
 -- Clinical Context: Radiologist queries T2 Sagittal pulse sequences for herniation.
 -- Engine Concept: Non-key predicate (%T2%SAG%), Phantom Read vulnerability under
 --                 REPEATABLE READ, and Phantom Elimination via Key-Range Locks
@@ -173,13 +158,13 @@ WHERE p.PatientID = '0001'
 -- [PAUSE HERE - DO NOT COMMIT YET]
 
 
--- [STEP 2A.2 - SESSION 2 (Query Window 2)]: Insert a new slice for Patient 0001
+-- [STEP 2A.2 - SESSION 2 (Query Window 2)]: Insert a phantom slice for Patient 0001
 /* Execute in Query Window 2: */
-/*
-    USE SpineMRI_DBMS;
-    INSERT INTO MRI_Scans (PatientID, StudyInstanceUID, SeriesDescription, ImagePath)
-    VALUES ('0001', 'STUDY_TEST_PHANTOM', 'T2_TSE_SAG_NEW', '01_MRI_Data/phantom_slice.dcm');
-*/
+
+USE SpineMRI_DBMS;
+INSERT INTO MRI_Scans (PatientID, StudyInstanceUID, SeriesDescription, ImagePath)
+VALUES ('0001', 'STUDY_TEST_PHANTOM', 'T2_TSE_SAG_NEW', '01_MRI_Data/phantom_slice.dcm');
+
 
 
 -- [STEP 2A.3 - SESSION 1 (Query Window 1)]: Re-read the exact same query
@@ -190,7 +175,7 @@ WHERE p.PatientID = '0001'
   AND s.SeriesDescription LIKE '%T2%SAG%';
 
 -- [OBSERVE PHANTOM READ]:
--- The count increased by 1! REPEATABLE READ only locked EXISTING rows;
+-- The count increased by 1! REPEATABLE READ only locked existing rows;
 -- it could not prevent the insertion of a new row (a Phantom) into the gap!
 
 COMMIT TRANSACTION;
@@ -221,16 +206,14 @@ WHERE p.PatientID = '0001'
 
 -- [STEP 2B.2 - SESSION 2 (Query Window 2)]: Attempt concurrent insert
 /* Execute in Query Window 2: */
-/*
-    USE SpineMRI_DBMS;
-    -- This insert will BLOCK immediately because Session 1 holds RangeS-S locks:
-    INSERT INTO MRI_Scans (PatientID, StudyInstanceUID, SeriesDescription, ImagePath)
-    VALUES ('0001', 'STUDY_TEST_SERIAL', 'T2_TSE_SAG_SERIAL', '01_MRI_Data/serial_slice.dcm');
-*/
+USE SpineMRI_DBMS;
+-- This insert will BLOCK immediately because Session 1 holds RangeS-S locks:
+INSERT INTO MRI_Scans (PatientID, StudyInstanceUID, SeriesDescription, ImagePath)
+VALUES ('0001', 'STUDY_TEST_SERIAL', 'T2_TSE_SAG_SERIAL', '01_MRI_Data/serial_slice.dcm');
 
 
 -- [STEP 2B.3 - MONITOR WINDOW (Query Window 3)]:
--- -> USE THIS CAPTURE FOR FIGURE 2.4 IN YOUR TECHNICAL REPORT!
+-- -> USE THIS CAPTURE FOR FIGURE 2.4 IN CHAPTER 6!
 SELECT 
     wt.session_id AS [BlockedSessionID],
     wt.wait_duration_ms AS [WaitDuration_MS],
@@ -251,14 +234,14 @@ WHERE wt.blocking_session_id IS NOT NULL;
 -- [STEP 2B.4 - SESSION 1 (Query Window 1)]: Release transaction
 COMMIT TRANSACTION;
 
--- Cleanup if Session 2's insert went through after commit:
+-- Cleanup if Session 2's insert finalized after commit:
 DELETE FROM MRI_Scans WHERE StudyInstanceUID = 'STUDY_TEST_SERIAL';
 GO
 
 
 
 -- ============================================================================
--- CASE 3: CANONICAL QUERY 3 (AI Feature Similarity Retrieval & Lock Escalation)
+-- CASE 3 [ROLE 5.1]: CANONICAL QUERY 3 (MASSIVE WORKLOAD & LOCK ESCALATION)
 -- Clinical Context: Content-Based Image Retrieval (CBIR) across 48,345 slices.
 -- Engine Concept: Exhaustive Clustered Index Scan on Image_Features, CPU Vector
 --                 Euclidean Distance computation, and Lock Escalation Dynamics
@@ -317,7 +300,7 @@ ORDER BY FeatureID;
 
 -- ----------------------------------------------------------------------------
 -- [CASE 3 - STEP 3]: Monitor Lock Escalation in [MONITOR WINDOW] (Query Window 3)
--- -> USE THIS CAPTURE FOR FIGURE 2.5 IN YOUR TECHNICAL REPORT!
+-- -> USE THIS CAPTURE FOR FIGURE 2.5 IN CHAPTER 6!
 -- ----------------------------------------------------------------------------
 /* Execute this in Query Window 3: */
 SELECT 
@@ -325,7 +308,10 @@ SELECT
     tl.resource_type AS [Resource],
     tl.request_mode AS [LockMode],
     tl.request_status AS [Status],
-    OBJECT_NAME(p.object_id) AS [TableName]
+    CASE tl.resource_type 
+        WHEN 'OBJECT' THEN OBJECT_NAME(tl.resource_associated_entity_id)
+        ELSE OBJECT_NAME(p.object_id)
+    END AS [TableName]
 FROM sys.dm_tran_locks tl
 LEFT JOIN sys.partitions p 
     ON tl.resource_associated_entity_id = p.hobt_id
@@ -333,7 +319,7 @@ WHERE tl.resource_database_id = DB_ID('SpineMRI_DBMS')
   AND tl.request_session_id <> @@SPID;
 
 -- [EXPECTED OBSERVATION FOR FIGURE 2.5]:
--- SQL Server has converted individual row/page locks into:
+-- SQL Server has converted thousands of individual row/page locks into:
 -- Resource = OBJECT | LockMode = S | TableName = Image_Features
 -- Memory is saved, but concurrent writes to Image_Features are now blocked!
 
@@ -341,23 +327,19 @@ WHERE tl.resource_database_id = DB_ID('SpineMRI_DBMS')
 -- ----------------------------------------------------------------------------
 -- [CASE 3 - STEP 4]: Cleanup in [SESSION 1] (Query Window 1)
 -- ----------------------------------------------------------------------------
-/* Release the transaction in Query Window 1: */
+/* Release transaction in Query Window 1: */
 ROLLBACK TRANSACTION;
 GO
 
 
 
 -- ============================================================================
--- CASE 4: CLASSICAL CONCURRENCY ANOMALIES & DEADLOCK LABORATORY
--- Clinical Context: Diagnostic record updates, concurrent clinician edits.
--- Engine Concept: Temporary Update (Dirty Read) and Deadlock Detection (Victim 1205).
+-- CASE 4 [ROLE 5.1]: DIRTY READ ANOMALY (TEMPORARY UPDATE VIOLATION)
+-- Clinical Context: Clinician modifies patient notes, then aborts transaction.
+-- Engine Concept: READ UNCOMMITTED (dirty read allowed) vs READ COMMITTED (blocked).
 -- ============================================================================
 
--- ----------------------------------------------------------------------------
--- [CASE 4.1]: DIRTY READ ANOMALY (READ UNCOMMITTED)
--- ----------------------------------------------------------------------------
-
--- [STEP 4.1A - SESSION 1 (Query Window 1)]: Uncommitted modification
+-- [STEP 4.1 - SESSION 1 (Query Window 1)]: Uncommitted modification
 BEGIN TRANSACTION;
 UPDATE Patients 
 SET ClinicalNotes = 'CRITICAL CORRECTION: Severe disc herniation with nerve root impingement.'
@@ -365,61 +347,111 @@ WHERE PatientID = '0001';
 -- [PAUSE - DO NOT COMMIT]
 
 
--- [STEP 4.1B - SESSION 2 (Query Window 2)]: Dirty read via READ UNCOMMITTED
+-- [STEP 4.2 - SESSION 2 (Query Window 2)]: Dirty read via READ UNCOMMITTED
 /* Execute in Query Window 2: */
-/*
-    SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-    SELECT PatientID, ClinicalNotes 
-    FROM Patients 
-    WHERE PatientID = '0001';
-    -- [OBSERVE]: Session 2 reads the uncommitted note ('CRITICAL CORRECTION')!
-*/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT PatientID, ClinicalNotes 
+FROM Patients 
+WHERE PatientID = '0001';
+-- [OBSERVE]: Session 2 reads the uncommitted note ('CRITICAL CORRECTION')!
 
 
--- [STEP 4.1C - SESSION 1 (Query Window 1)]: Transaction aborts
+-- [STEP 4.3 - SESSION 1 (Query Window 1)]: Transaction aborts
 ROLLBACK TRANSACTION;
 
 
--- [STEP 4.1D - SESSION 2 (Query Window 2)]: Re-read
-/*
-    SELECT PatientID, ClinicalNotes 
-    FROM Patients 
-    WHERE PatientID = '0001';
-    -- [OBSERVE]: Value has reverted. Session 2 had processed false "dirty" data!
-*/
+-- [STEP 4.4 - SESSION 2 (Query Window 2)]: Re-read
+
+SELECT PatientID, ClinicalNotes 
+FROM Patients 
+WHERE PatientID = '0001';
+-- [OBSERVE]: Value has reverted. Session 2 had processed false "dirty" data!
+
 GO
 
 
--- ----------------------------------------------------------------------------
--- [CASE 4.2]: DEADLOCK REPRODUCTION & AUTOMATIC RESOLUTION (ERROR 1205)
--- ----------------------------------------------------------------------------
 
--- [STEP 4.2A - INSTRUCTIONS]:
--- 1. Open Query Window 1 ([SESSION 1]) and Query Window 2 ([SESSION 2]).
--- 2. Execute Block 1 in Window 1, then IMMEDIATELY execute Block 2 in Window 2.
+
+-- ============================================================================
+-- ============================================================================
+-- PART II: ROLE 5.2 SCOPE (FOR REFERENCE & GROUP COORDINATION ONLY)
+-- ============================================================================
+-- ATTENTION MEMBER 5.1:
+-- The modules below belong strictly to the domain of MEMBER 5.2 (Deadlock & MVCC).
+-- You DO NOT need to run, capture, or document these in your Chapter 6 report!
+-- They are maintained here so your group shares a unified, single repository script.
+-- ============================================================================
+
+-- ============================================================================
+-- CASE 5 [ROLE 5.2 SCOPE]: DEADLOCK REPRODUCTION & WAIT-FOR GRAPH (MSG 1205)
+-- Assigned Member: Role 5.2
+-- Engine Concept: Deadlock detection via Waits-For Graph cycle, SET DEADLOCK_PRIORITY,
+--                 and Deadlock Graph (.xdl / Extended Events system_health).
+-- ============================================================================
+
+-- [STEP 5.1 - INSTRUCTIONS FOR ROLE 5.2]:
+-- Execute Block 1 in Session 1, then IMMEDIATELY execute Block 2 in Session 2.
 
 -- [SESSION 1 SCRIPT (Query Window 1)]:
 /*
+    USE SpineMRI_DBMS;
+    SET DEADLOCK_PRIORITY NORMAL;
     BEGIN TRANSACTION;
     UPDATE Patients SET DiagnosisStatus = 'Reviewing' WHERE PatientID = '0001';
-    WAITFOR DELAY '00:00:05'; -- Pause 5 seconds to let Session 2 acquire its lock
+    WAITFOR DELAY '00:00:05'; -- Pause 5s to let Session 2 acquire its lock
     UPDATE MRI_Scans SET SeriesDescription = SeriesDescription WHERE ScanID = 1;
     COMMIT TRANSACTION;
 */
 
 -- [SESSION 2 SCRIPT (Query Window 2)]:
 /*
+    USE SpineMRI_DBMS;
+    SET DEADLOCK_PRIORITY LOW; -- Lower priority guarantees Session 2 is victim!
     BEGIN TRANSACTION;
     UPDATE MRI_Scans SET SeriesDescription = SeriesDescription WHERE ScanID = 1;
-    WAITFOR DELAY '00:00:05'; -- Pause 5 seconds to let Session 1 acquire its lock
+    WAITFOR DELAY '00:00:05'; -- Pause 5s to let Session 1 acquire its lock
     UPDATE Patients SET DiagnosisStatus = 'Reviewing' WHERE PatientID = '0001';
     COMMIT TRANSACTION;
 */
 
--- [ENGINE DEADLOCK RESOLUTION]:
--- After 5 seconds, SQL Server's background Deadlock Monitor thread detects the cycle:
+-- [ENGINE DEADLOCK RESOLUTION (ROLE 5.2 OUTPUT)]:
 -- "Msg 1205, Level 13, State 45: Transaction (Process ID ...) was deadlocked on 
 --  lock resources with another process and has been chosen as the deadlock victim. 
 --  Rerun the transaction."
--- The engine rolls back the lower-cost transaction and allows the other to commit!
+-- Role 5.2 extracts the Deadlock Graph from Extended Events system_health!
+GO
+
+
+-- ============================================================================
+-- CASE 6 [ROLE 5.2 SCOPE]: ROW VERSIONING (RCSI) & TEMPDB VERSION STORE
+-- Assigned Member: Role 5.2
+-- Engine Concept: Read Committed Snapshot Isolation (RCSI), non-blocking reads,
+--                 and tempdb Version Store monitoring.
+-- ============================================================================
+
+-- [STEP 6.1 - ENABLE RCSI AT DATABASE LEVEL (ROLE 5.2 ONLY)]:
+/*
+    ALTER DATABASE SpineMRI_DBMS SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
+*/
+
+-- [STEP 6.2 - NON-BLOCKING READ TEST (ROLE 5.2)]:
+-- Session 1 modifies a row without committing:
+/*
+    BEGIN TRANSACTION;
+    UPDATE Patients SET DiagnosisStatus = 'Evaluating' WHERE PatientID = '0001';
+    -- Under RCSI, Session 2 can READ this row without waiting for Session 1!
+*/
+
+-- [STEP 6.3 - MONITOR TEMPDB VERSION STORE SPACE (ROLE 5.2)]:
+/*
+    SELECT 
+        SUM(version_store_reserved_page_count) * 8 / 1024.0 AS [VersionStore_MB],
+        SUM(user_object_reserved_page_count) * 8 / 1024.0 AS [UserObjects_MB]
+    FROM sys.dm_db_file_space_usage;
+*/
+
+-- [REVERT RCSI BACK TO DEFAULT PESSIMISTIC LOCKING]:
+/*
+    ALTER DATABASE SpineMRI_DBMS SET READ_COMMITTED_SNAPSHOT OFF WITH ROLLBACK IMMEDIATE;
+*/
 GO
