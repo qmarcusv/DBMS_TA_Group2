@@ -1,0 +1,3 @@
+Changed database context to 'SpineMRI_DBMS'.
+00:03:33.435  A: ScanID 80 (patient 0002) re-labelled, X locks held
+00:03:43.439  A: ROLLBACK (data restored)

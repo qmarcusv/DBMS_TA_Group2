@@ -1,0 +1,5 @@
+Changed database context to 'SpineMRI_DBMS'.
+23:55:35.421  B: READ COMMITTED read finished
+Mode ValueSeen ElapsedMs LockWaitMs
+---- --------- --------- ----------
+READ COMMITTED (locking, RCSI OFF) Revised 7953 7953
