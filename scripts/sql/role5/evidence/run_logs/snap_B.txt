@@ -1,0 +1,6 @@
+Changed database context to 'SpineMRI_DBMS'.
+23:56:03.667  B: first SNAPSHOT read done
+23:56:15.669  B: second SNAPSHOT read done (after A committed)
+Mode FirstRead FirstReadMs SecondRead CommittedNow
+---- --------- ----------- ---------- ------------
+SNAPSHOT Confirmed 0 Confirmed Revised

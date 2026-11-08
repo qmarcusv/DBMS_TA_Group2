@@ -1,0 +1,26 @@
+Changed database context to 'SpineMRI_DBMS'.
+WaitingSession BlockedBy wait_type WaitMs wait_resource WaitingStatement
+-------------- --------- --------- ------ ------------- ----------------
+62 63 LCK_M_X 241 KEY: 6:72057594047299584 (8194443284a0) UPDATE [dbo].[MRI_Scans] set [AcquisitionDate] = sysdatetime()  WHERE [ScanID]=@1
+63 62 LCK_M_X 2209 KEY: 6:72057594047234048 (5f6f76815dbe) UPDATE [dbo].[Patients] set [DiagnosisStatus] = @1  WHERE [PatientID]=@2
+SessionID Resource ObjectName IndexName KeyHashOrPage Mode Status
+--------- -------- ---------- --------- ------------- ---- ------
+62 KEY MRI_Scans PK_MRI_Scans (8194443284a0) X WAIT
+62 KEY Patients PK_Patients (5f6f76815dbe) X GRANT
+62 OBJECT MRI_Scans NULL  IX GRANT
+62 OBJECT Patients NULL  IX GRANT
+62 PAGE Patients PK_Patients 1:408 IX GRANT
+62 PAGE MRI_Scans PK_MRI_Scans 1:456 IX GRANT
+63 KEY Patients PK_Patients (5f6f76815dbe) X WAIT
+63 KEY MRI_Scans PK_MRI_Scans (8194443284a0) X GRANT
+63 OBJECT Patients NULL  IX GRANT
+63 OBJECT MRI_Scans NULL  IX GRANT
+63 PAGE MRI_Scans PK_MRI_Scans 1:456 IX GRANT
+63 PAGE Patients PK_Patients 1:408 IX GRANT
+session_id IsolationLevel deadlock_priority open_transaction_count
+---------- -------------- ----------------- ----------------------
+62 READ COMMITTED -5 2
+63 READ COMMITTED 0 2
+DatabaseName reserved_page_count reserved_space_kb
+------------ ------------------- -----------------
+SpineMRI_DBMS 0 0

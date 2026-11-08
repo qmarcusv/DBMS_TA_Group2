@@ -1,0 +1,19 @@
+Changed database context to 'SpineMRI_DBMS'.
+WaitingSession BlockedBy wait_type WaitMs wait_resource WaitingStatement
+-------------- --------- --------- ------ ------------- ----------------
+63 62 LCK_M_S 2033 KEY: 6:72057594047234048 (5f6f76815dbe) SELECT @v = DiagnosisStatus FROM dbo.Patients WHERE PatientID = '0001'
+SessionID Resource ObjectName IndexName KeyHashOrPage Mode Status
+--------- -------- ---------- --------- ------------- ---- ------
+62 KEY Patients PK_Patients (5f6f76815dbe) X GRANT
+62 OBJECT Patients NULL  IX GRANT
+62 PAGE Patients PK_Patients 1:408 IX GRANT
+63 KEY Patients PK_Patients (5f6f76815dbe) S WAIT
+63 OBJECT Patients NULL  IS GRANT
+63 PAGE Patients PK_Patients 1:408 IS GRANT
+session_id IsolationLevel deadlock_priority open_transaction_count
+---------- -------------- ----------------- ----------------------
+62 READ COMMITTED 0 1
+63 READ COMMITTED 0 0
+DatabaseName reserved_page_count reserved_space_kb
+------------ ------------------- -----------------
+SpineMRI_DBMS 0 0

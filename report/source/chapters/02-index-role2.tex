@@ -1,0 +1,229 @@
+% =====================================================================
+% Chapter 3 — Role 2: Storage & Indexing
+% File: report/source/chapters/03-indexing-role2.tex
+%
+% Packages required in the main preamble (main.tex):
+%   \usepackage{graphicx, booktabs, multirow, float, caption}
+%   \usepackage{listings, xcolor, array, tabularx}
+% =====================================================================
+
+% ---- T-SQL listing style (safe to keep if already defined in main.tex) ----
+\lstdefinestyle{tsql}{
+  language=SQL,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  commentstyle=\color{green!40!black}\itshape,
+  stringstyle=\color{red!60!black},
+  numbers=left, numberstyle=\tiny\color{gray},
+  frame=single, breaklines=true, columns=fullflexible,
+  showstringspaces=false, tabsize=2
+}
+\lstset{style=tsql}
+
+% ---- Figure helper: shows a placeholder box if the image file is missing ----
+\newcommand{\planfig}[3]{% #1 = image path, #2 = width, #3 = placeholder text
+  \IfFileExists{#1}{\includegraphics[width=#2]{#1}}%
+  {\fbox{\parbox{0.8\textwidth}{\centering\vspace{1.5cm}[Insert image: #3]\vspace{1.5cm}}}}}
+
+\chapter{Physical Storage and Index Design (Role 2: Storage \& Indexing)}
+\label{chap:indexing-role2}
+
+This chapter presents the work of Role~2 on the \texttt{SpineMRI\_DBMS} database. It analyses the physical storage structure and B-Tree depth of the baseline schema, describes the design of three index types (Covering B-Tree, Filtered Index, and Non-Clustered Columnstore Index), analyses the actual execution plans captured in SSMS, and summarises the \texttt{STATISTICS IO} and \texttt{STATISTICS TIME} measurements for queries Q1, Q2, and Q3.
+
+% =====================================================================
+\section{Physical Storage and B-Tree Depth Analysis}
+\label{sec:baseline-storage}
+
+\subsection{Baseline Database State}
+
+The \texttt{SpineMRI\_DBMS} database was restored from a 53.6~MB backup file. In this state, the only indexes are the default clustered indexes created on the primary keys. The physical statistics, obtained from the DMV \texttt{sys.dm\_db\_index\_physical\_stats(..., 'DETAILED')}, are summarised in Table~\ref{tab:baseline-storage}.
+
+\begin{table}[H]
+\centering
+\caption{Physical storage structure of the tables in the baseline state}
+\label{tab:baseline-storage}
+\small
+\begin{tabular}{llccccr}
+\toprule
+\textbf{Table} & \textbf{Index type} & \textbf{Key} & \textbf{B-Tree depth} & \textbf{Leaf pages} & \textbf{Size} & \textbf{Rows} \\
+\midrule
+\texttt{Patients}        & Clustered & \texttt{PatientID} & 2 & 8     & 0.06 MB  & 575    \\
+\texttt{MRI\_Scans}      & Clustered & \texttt{ScanID}    & 3 & 1,876 & 14.66 MB & 48,345 \\
+\texttt{Image\_Features} & Clustered & \texttt{ScanID}    & 3 & 3,900 & 30.47 MB & 48,345 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{B-Tree Depth Observations}
+
+\begin{itemize}
+  \item \textbf{\texttt{Patients} table (depth = 2):} a single root page (Level~1) points directly to 8 leaf pages (Level~0). Any lookup by \texttt{PatientID} therefore costs exactly 2 logical page reads (\texttt{logical reads} = 2).
+  \item \textbf{\texttt{MRI\_Scans} and \texttt{Image\_Features} tables (depth = 3):} each consists of a root page (Level~2), intermediate pages (Level~1), and a leaf level (Level~0) holding all 48,345 rows.
+\end{itemize}
+
+\subsection{Physical Bottleneck in the Baseline State}
+
+SQL Server does \textbf{not} automatically create an index on foreign key columns such as \texttt{MRI\_Scans.PatientID}. Consequently, when \texttt{Patients} is joined to \texttt{MRI\_Scans} with the predicate \texttt{PatientID = '0001'}, the optimizer is forced to scan all 1,876 leaf pages plus the IAM and non-leaf pages of \texttt{MRI\_Scans}, a total of \textbf{1,880 logical reads}, merely to retrieve a few dozen matching rows.
+
+% =====================================================================
+\section{Index Design and Implementation}
+\label{sec:index-engineering}
+
+\subsection{Covering B-Tree Indexes for Q1 and Q2}
+
+\begin{lstlisting}[caption={Two covering B-Tree indexes on \texttt{MRI\_Scans}}, label={lst:covering}]
+-- 1. Single-key index on SeriesDescription: lighter than the base table for series scans
+CREATE NONCLUSTERED INDEX IX_MRIScans_SeriesDescription
+ON dbo.MRI_Scans (SeriesDescription ASC)
+INCLUDE (PatientID, ImagePath);
+
+-- 2. Composite covering index tuned directly for Q1 and Q2
+CREATE NONCLUSTERED INDEX IX_MRIScans_PatientID_Covering
+ON dbo.MRI_Scans (PatientID ASC, SeriesDescription ASC)
+INCLUDE (ImagePath);
+\end{lstlisting}
+
+\textbf{Design rationale.} Placing \texttt{PatientID} as the leading key allows SQL Server to perform an \textit{Index Seek} that jumps directly to the range holding the 65 slices of patient \texttt{'0001'}. The second key column, \texttt{SeriesDescription}, keeps the sequence names pre-sorted in lexicographic order within each patient. The \texttt{INCLUDE (ImagePath)} clause attaches the image file path to the leaf level without enlarging the upper navigation nodes, so the query obtains all required data from the index itself (\textbf{0 Key Lookups}).
+
+\subsection{Filtered Index for T2 Sagittal Sequences (Q2)}
+
+\begin{lstlisting}[caption={Filtered Index for T2 Sagittal sequences}, label={lst:filtered}]
+CREATE NONCLUSTERED INDEX IX_MRIScans_T2Sag_Filtered
+ON dbo.MRI_Scans (PatientID ASC, SeriesDescription ASC)
+INCLUDE (ImagePath)
+WHERE SeriesDescription IN (
+    'I_T2_TSE_SAG_P2_384_0002', 'POSDISP_[2]_T2_TSE_SAG_384_5001',
+    'POSDISP_[2]_T2_TSE_SAG_384_5002', 'POSDISP_[3]_T2_TSE_SAG_384_5001',
+    'POSDISP_[4]_T2_TSE_SAG_384_5001', 'POSDISP_[6]_T2_TIRM_SAG_P2_5002',
+    'POSDISP_[7]_T2_TIRM_SAG_P2_5003', 'T2_CISS3D_SAG_ISO_0006',
+    'T2_TIRM_SAG_BOX_0008', 'T2_TIRM_SAG_P2_0004', 'T2_TIRM_SAG_P2_0005',
+    'T2_TIRM_SAG_P2_0006', 'T2_TIRM_SAG_P2_0007', 'T2_TIRM_SAG_P2_0008',
+    'T2_TIRM_SAG_P2_0009', 'T2_TIRM_SAG_P2_0010', 'T2_TSE_SAG_256_0006',
+    'T2_TSE_SAG_256_0007', 'T2_TSE_SAG_320_0002', 'T2_TSE_SAG_320_0003',
+    'T2_TSE_SAG_380_0006', 'T2_TSE_SAG_380_0008', 'T2_TSE_SAG_384_0002',
+    'T2_TSE_SAG_384_0003', 'T2_TSE_SAG_384_0004', 'T2_TSE_SAG_384_0005',
+    'T2_TSE_SAG_384_0006', 'T2_TSE_SAG_384_0007', 'T2_TSE_SAG_384_0008',
+    'T2_TSE_SAG_384_0009', 'T2_TSE_SAG_448_0006', 'T2_TSE_SAG_448_0013'
+);
+\end{lstlisting}
+
+\textbf{Key technical point.} In Microsoft SQL Server, the filtered index predicate parser does \emph{not} allow the \texttt{LIKE} operator with a leading wildcard. The statement \texttt{WHERE SeriesDescription LIKE '\%T2\%SAG\%'} fails with \texttt{Msg 10735: Incorrect WHERE clause for filtered index}. We resolved this by profiling the actual value domain of the column in \texttt{MRI\_Scans}, extracting exactly \textbf{32 distinct T2 Sagittal sequence codes}, and constructing a valid \texttt{WHERE SeriesDescription IN (...)} clause.
+
+\subsection{Non-Clustered Columnstore Index (NCCI) for Q3}
+
+\begin{lstlisting}[caption={Non-Clustered Columnstore Index on \texttt{Image\_Features}}, label={lst:ncci}]
+CREATE NONCLUSTERED COLUMNSTORE INDEX NCCI_ImageFeatures_Dims
+ON dbo.Image_Features (ScanID, V_Dim1, V_Dim2, V_Dim3, V_Dim4);
+\end{lstlisting}
+
+\textbf{Design rationale.} Query Q3 computes the Euclidean distance over all 48,345 rows of \texttt{Image\_Features}. Under rowstore storage, each 8~KB page must also hold the long JSON vector string column (\texttt{NVARCHAR(MAX)}), so the table occupies 3,909 disk pages. The columnstore index separates the four floating-point columns (\texttt{V\_Dim1..V\_Dim4}) and \texttt{ScanID} into compressed column segments, and enables \textbf{Batch Mode} execution, which processes roughly 900 rows per batch using vectorised CPU operations instead of row-by-row Row Mode processing.
+
+% =====================================================================
+\section{Execution Plan Analysis}
+\label{sec:execution-plan}
+
+\subsection{Q1 and Q2: Before and After Covering B-Tree Indexing}
+
+\begin{figure}[H]
+  \centering
+  \planfig{image/role_2/role2_query7.png}{0.95\textwidth}{Baseline execution plan of Q1/Q2 (Query 7 screenshot)}
+  \caption{Baseline execution plan of Q1/Q2: \textit{Clustered Index Scan} on \texttt{PK\_MRI\_Scans} with a Missing Index warning}
+  \label{fig:q12-baseline}
+\end{figure}
+
+\textbf{Baseline (Figure~\ref{fig:q12-baseline}).} The plan displays a Missing Index warning (Impact 99.0316). The \textit{Clustered Index Seek} on \texttt{PK\_Patients} costs 0\% (0.000s, 1 of 1), whereas the \textit{Clustered Index Scan} on \texttt{PK\_MRI\_Scans} accounts for \textbf{96\%} of the total cost (0.006s) and reads all 1,880 pages only to filter out 15 rows (Q2) or 65 rows (Q1). SQL Server itself suggests creating an index on \texttt{([PatientID]) INCLUDE ([SeriesDescription], [ImagePath])} with an estimated improvement of 99.0316\%.
+
+\begin{figure}[H]
+  \centering
+  \planfig{image/role_2/role2_query18.png}{0.95\textwidth}{Optimized execution plan of Q1 (Query 18 screenshot)}
+  \caption{Optimized execution plan of Q1: \textit{Index Seek (NonClustered)} on \texttt{IX\_MRIScans\_PatientID\_Covering}}
+  \label{fig:q1-optimized}
+\end{figure}
+
+\textbf{Q1 after optimization (Figure~\ref{fig:q1-optimized}).} The Missing Index warning disappears. The \textit{Index Seek (NonClustered)} operator accounts for 54\% of the relative cost, its execution time drops to 0.000s, and it retrieves exactly 65 of 65 (100\%) rows. The \textit{Nested Loops (Inner Join)} costs only 4\% (0.000s). The plan contains \textbf{no Key Lookup} because \texttt{ImagePath} is included at the leaf level.
+
+\begin{figure}[H]
+  \centering
+  \planfig{image/role_2/role2_query19.png}{0.95\textwidth}{Optimized execution plan of Q2 (Query 19 screenshot)}
+  \caption{Optimized execution plan of Q2: \textit{Index Seek} with a residual predicate}
+  \label{fig:q2-optimized}
+\end{figure}
+
+\textbf{Q2 after optimization (Figure~\ref{fig:q2-optimized}).} SQL Server performs an \textit{Index Seek} on the leading key \texttt{PatientID = '0001'} to isolate the 65 rows of the patient (reading only 6 logical pages), then applies the \textit{residual predicate} \texttt{SeriesDescription LIKE '\%T2\%SAG\%'} in memory, returning 15 of 29 (51\%) rows in 0.000s.
+
+\subsection{Q3: Rowstore Parallel Scan versus Columnstore Batch Mode}
+
+\begin{figure}[H]
+  \centering
+  \planfig{image/role_2/role2_q3_baseline_plan.png}{0.95\textwidth}{Baseline execution plan of Q3}
+  \caption{Baseline execution plan of Q3: parallel rowstore scan with three Parallelism operators}
+  \label{fig:q3-baseline}
+\end{figure}
+
+\textbf{Baseline (Figure~\ref{fig:q3-baseline}).} The plan shows a Missing Index warning (Impact 51.4051) on \texttt{Image\_Features} and three Parallelism operators.
+\begin{itemize}
+  \item Upper right branch: a \textit{Clustered Index Scan} on \texttt{PK\_Image\_Features} accounts for \textbf{53\%} of the cost (0.005s), reading 3,909 pages across 9 parallel threads (Scan count 9).
+  \item Lower right branch: a \textit{Clustered Index Scan} on \texttt{PK\_MRI\_Scans} accounts for 27\% of the cost (0.002s), reading 1,972 pages.
+  \item After the \textit{Hash Match (Inner Join)} (4\%, 0.013s) and \textit{Compute Scalar} (0\%), the \textit{Sort (Top N Sort)} operator costs 7\% (0.018s) across multiple parallel threads, before \textit{Parallelism (Gather Streams)} merges the output into the final 3 rows.
+\end{itemize}
+
+\begin{figure}[H]
+  \centering
+  \planfig{image/role_2/role2_query21.png}{0.95\textwidth}{Optimized execution plan of Q3 (Query 21 screenshot)}
+  \caption{Optimized execution plan of Q3: \textit{Columnstore Index Scan} running in Batch Mode}
+  \label{fig:q3-optimized}
+\end{figure}
+
+\textbf{Q3 after optimization (Figure~\ref{fig:q3-optimized}).} The Missing Index warning disappears and the upper right branch becomes a \textit{Columnstore Index Scan (NonClustered)} on \texttt{NCCI\_ImageFeatures\_Dims}.
+\begin{itemize}
+  \item \textbf{\texttt{Image\_Features} table:} the relative cost of the scan operator falls from 53\% to only \textbf{1\%} (0.004s), reading a single compressed column segment (Segment reads = 1) with 0 logical reads on the rowstore buffer pool.
+  \item \textbf{\texttt{MRI\_Scans} table:} instead of scanning the clustered index (1,972 pages), SQL Server automatically chooses the lightweight index \texttt{IX\_MRIScans\_SeriesDescription} (1,576 pages, a 20.1\% I/O reduction).
+  \item \textbf{Sorting:} thanks to single-threaded execution combined with Batch Mode, the \textit{Sort (Top N Sort)} time drops from 0.018s to 0.001s (about 18 times faster) and returns 3 of 3 (100\%) rows directly.
+\end{itemize}
+
+\textit{Note:} the variable-assignment step \texttt{SELECT @T1 = V\_Dim1 ... WHERE ScanID = @TargetScanID} (Query 20 screenshot) costs only 5 logical reads and is therefore not the focus of the analysis; the focus of Q3 is the main query that computes the Euclidean distance.
+
+% =====================================================================
+\section{Benchmark Evaluation: I/O and CPU Measurements}
+\label{sec:benchmark}
+
+Table~\ref{tab:benchmark} summarises the results measured with \texttt{SET STATISTICS IO ON} and \texttt{SET STATISTICS TIME ON} in SSMS.
+
+\begin{table}[H]
+\centering
+\caption{Benchmark results for baseline and optimized Q1, Q2, and Q3}
+\label{tab:benchmark}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{llXXrrrX}
+\toprule
+\textbf{Query} & \textbf{State} & \textbf{Reads (MRI\_Scans)} & \textbf{Reads (Patients / Features)} & \textbf{Total reads} & \textbf{CPU (ms)} & \textbf{Elapsed (ms)} & \textbf{Main access operator} \\
+\midrule
+\multirow{3}{*}{Q1}
+ & Baseline  & 1,880 & 2 (Patients) & 1,882 & 15 & 72 & Clustered Index Scan (96\% cost) \\
+ & Optimized & 6     & 2 (Patients) & 8     & 0  & 37 & Index Seek (Covering), 0 Key Lookups \\
+ & \textit{Change} & \textit{-99.68\%} & \textit{unchanged} & \textit{-99.57\%} & \textit{-100\%} & \textit{-48.61\%} & Table scan eliminated \\
+\midrule
+\multirow{3}{*}{Q2}
+ & Baseline  & 1,880 & 2 (Patients) & 1,882 & 0 & 132 & Clustered Index Scan (96\% cost) \\
+ & Optimized & 6     & 2 (Patients) & 8     & 0 & 123 & Index Seek + Residual Filter \\
+ & \textit{Change} & \textit{-99.68\%} & \textit{unchanged} & \textit{-99.57\%} & \textit{stays $<$1} & \textit{-6.82\%} & Filtering on 6 leaf pages \\
+\midrule
+\multirow{3}{*}{Q3}
+ & Baseline  & 1,972 & 3,909 (Image\_Features) & 5,881 & 76 & 144 & Parallel Clustered Index Scan (Row Mode) \\
+ & Optimized & 1,576 & 0 + 236 LOB (Segment reads = 1) & 1,812 & 47 & 163 & Columnstore Index Scan (Batch Mode) \\
+ & \textit{Change} & \textit{-20.08\%} & \textit{-93.96\% (incl. LOB)} & \textit{-69.19\%} & \textit{-38.16\%} & \textit{+13.19\%} & Single-threaded, Batch Mode \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Discussion of Results}
+
+\begin{itemize}
+  \item \textbf{Q1 and Q2:} logical reads on \texttt{MRI\_Scans} drop from 1,880 to 6 (\textbf{-99.68\%}) and total I/O drops by 99.57\%. The full table scan is completely replaced by an \textit{Index Seek}. For Q1, CPU time falls from 15~ms to 0~ms and elapsed time drops by 48.61\%; for Q2 the elapsed-time reduction is more modest (6.82\%) because the remaining time does not depend on I/O against the table.
+  \item \textbf{Q3:} total pages read fall by almost 70\% (5,881 to 1,812) and CPU time falls by \textbf{38.16\%} (76~ms to 47~ms). Although elapsed time rises from 144~ms to 163~ms, this is because the execution plan changes from 8 parallel threads (Scan count 9) to a single sequential thread. In exchange, the system consumes less processor time, which is advantageous when many queries run concurrently.
+\end{itemize}
+
+\subsection{Chapter Summary}
+
+The three index structures address the specific bottleneck of each query. The Covering B-Tree Index eliminates the table scan caused by the missing foreign-key index (Q1, Q2). The Filtered Index offers a narrower index for the T2 Sagittal sequence group, working around \texttt{Msg 10735} with an explicit value list. The Non-Clustered Columnstore Index combined with Batch Mode substantially reduces I/O and CPU for the vector computation in Q3.

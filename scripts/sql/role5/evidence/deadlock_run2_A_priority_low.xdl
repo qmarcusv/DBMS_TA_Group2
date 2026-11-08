@@ -1,0 +1,60 @@
+<deadlock><victim-list><victimProcess id="process18a4ee74088" /></victim-list><process-list><process id="process18a4ee74088" taskpriority="5" logused="308" waitresource="KEY: 6:72057594047299584 (8194443284a0)" waittime="1207" ownerId="426565" transactionname="user_transaction" lasttranstarted="2026-11-05T23:56:39.823" XDES="0x18a5051c480" lockMode="X" schedulerid="2" kpid="40976" status="suspended" spid="62" sbid="0" ecid="0" priority="-5" trancount="2" lastbatchstarted="2026-11-05T23:56:39.823" lastbatchcompleted="2026-11-05T23:56:39.820" lastattention="1900-01-01T00:00:00.820" clientapp="SQLCMD" hostname="DESKTOP-GRL13Q5" hostpid="9380" loginname="DESKTOP-GRL13Q5\Thanh Phuong" isolationlevel="read committed (2)" xactid="426565" currentdb="6" currentdbname="SpineMRI_DBMS" lockTimeout="4294967295" clientoption1="673185824" clientoption2="128056"><executionStack><frame procname="adhoc" line="15" stmtstart="24" stmtend="184" sqlhandle="0x02000000abeb103a468ac159fb95e9cf1c92982f86ff4eb00000000000000000000000000000000000000000">
+unknown    </frame><frame procname="adhoc" line="15" stmtstart="914" stmtend="1090" sqlhandle="0x02000000f1c92e2dc7fae1d3b2b4e399a50100344d668c710000000000000000000000000000000000000000">
+unknown    </frame></executionStack><inputbuf>
+SET NOCOUNT ON;
+SET DEADLOCK_PRIORITY LOW;
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+        UPDATE dbo.Patients
+        SET DiagnosisStatus = 'Under Review'
+        WHERE PatientID = '0001';
+        EXEC dbo.usp_Role5_Log N'A: X lock on Patients(0001) acquired';
+
+        -- &gt;&gt;&gt; Switch to Session B (01_deadlock_B.sql) and press F5 &lt;&lt;&lt;
+        WAITFOR DELAY '00:00:06';
+
+        EXEC dbo.usp_Role5_Log N'A: requesting X lock on MRI_Scans(ScanID = 1) ...';
+        UPDATE dbo.MRI_Scans
+        SET AcquisitionDate = SYSDATETIME()
+        WHERE ScanID = 1;
+    COMMIT TRANSACTION;
+    EXEC dbo.usp_Role5_Log N'A: COMMIT - survived';
+    SELECT 'A' AS Session, 'COMMITTED (survivor)' AS Outcome;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT &gt; 0 ROLLBACK TRANSACTION;
+    EXEC dbo.usp_Role5_Log N'A: chosen as deadlock victim - rolled back';
+    SELECT 'A' AS Session, 'ROLLED BACK (deadlock victim)' AS Outcome,
+           ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+   </inputbuf></process><process id="process18a3a561c18" taskpriority="0" logused="272" waitresource="KEY: 6:72057594047234048 (5f6f76815dbe)" waittime="3175" ownerId="426582" transactionname="user_transaction" lasttranstarted="2026-11-05T23:56:41.850" XDES="0x18a50514480" lockMode="X" schedulerid="14" kpid="39864" status="suspended" spid="63" sbid="0" ecid="0" priority="0" trancount="2" lastbatchstarted="2026-11-05T23:56:41.850" lastbatchcompleted="2026-11-05T23:56:41.850" lastattention="1900-01-01T00:00:00.850" clientapp="SQLCMD" hostname="DESKTOP-GRL13Q5" hostpid="28116" loginname="DESKTOP-GRL13Q5\Thanh Phuong" isolationlevel="read committed (2)" xactid="426582" currentdb="6" currentdbname="SpineMRI_DBMS" lockTimeout="4294967295" clientoption1="673185824" clientoption2="128056"><executionStack><frame procname="adhoc" line="14" stmtstart="70" stmtend="212" sqlhandle="0x020000004e8132323027c64c18d8eb53eb753aa2b1b9a0fd0000000000000000000000000000000000000000">
+unknown    </frame><frame procname="adhoc" line="14" stmtstart="760" stmtend="954" sqlhandle="0x02000000ca95f526f465b7af33faf09bd276633505888d260000000000000000000000000000000000000000">
+unknown    </frame></executionStack><inputbuf>
+SET NOCOUNT ON;
+SET DEADLOCK_PRIORITY NORMAL;
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+        UPDATE dbo.MRI_Scans
+        SET AcquisitionDate = SYSDATETIME()
+        WHERE ScanID = 1;
+        EXEC dbo.usp_Role5_Log N'B: X lock on MRI_Scans(ScanID = 1) acquired';
+
+        WAITFOR DELAY '00:00:02';
+
+        EXEC dbo.usp_Role5_Log N'B: requesting X lock on Patients(0001) ...';
+        UPDATE dbo.Patients
+        SET DiagnosisStatus = 'Image Checked'
+        WHERE PatientID = '0001';
+    COMMIT TRANSACTION;
+    EXEC dbo.usp_Role5_Log N'B: COMMIT - survived';
+    SELECT 'B' AS Session, 'COMMITTED (survivor)' AS Outcome;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT &gt; 0 ROLLBACK TRANSACTION;
+    EXEC dbo.usp_Role5_Log N'B: chosen as deadlock victim - rolled back';
+    SELECT 'B' AS Session, 'ROLLED BACK (deadlock victim)' AS Outcome,
+           ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+   </inputbuf></process></process-list><resource-list><keylock hobtid="72057594047299584" dbid="6" objectname="SpineMRI_DBMS.dbo.MRI_Scans" indexname="PK_MRI_Scans" id="lock18a3c06f580" mode="X" associatedObjectId="72057594047299584"><owner-list><owner id="process18a3a561c18" mode="X" /></owner-list><waiter-list><waiter id="process18a4ee74088" mode="X" requestType="wait" /></waiter-list></keylock><keylock hobtid="72057594047234048" dbid="6" objectname="SpineMRI_DBMS.dbo.Patients" indexname="PK_Patients" id="lock18a4c6e2580" mode="X" associatedObjectId="72057594047234048"><owner-list><owner id="process18a4ee74088" mode="X" /></owner-list><waiter-list><waiter id="process18a3a561c18" mode="X" requestType="wait" /></waiter-list></keylock></resource-list></deadlock>

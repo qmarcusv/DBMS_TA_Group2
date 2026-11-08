@@ -1,0 +1,7 @@
+Changed database context to 'SpineMRI_DBMS'.
+23:56:33.706  B: X lock on MRI_Scans(ScanID = 1) acquired
+23:56:35.721  B: requesting X lock on Patients(0001) ...
+23:56:39.512  B: chosen as deadlock victim - rolled back
+Session Outcome ErrorNumber ErrorMessage
+------- ------- ----------- ------------
+B ROLLED BACK (deadlock victim) 1205 Transaction (Process ID 63) was deadlocked on lock resources with another process and has been chosen as the deadlock victim. Rerun the transaction.

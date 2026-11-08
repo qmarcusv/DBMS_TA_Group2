@@ -1,0 +1,10 @@
+Changed database context to 'SpineMRI_DBMS'.
+00:03:12.201  B: Q1 finished
+Query Mode IndexState RowsReturned ElapsedMs LockWaitMs
+----- ---- ---------- ------------ --------- ----------
+Q1 Locking RC PK only 65 7976 7969
+TableName RowLocksRequested PageLocksRequested
+--------- ----------------- ------------------
+Image_Features 0 0
+MRI_Scans 0 1874
+Patients 1 1
