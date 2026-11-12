@@ -1,0 +1,390 @@
+% ---- T-SQL listing style (safe to keep if already defined in main.tex) ----
+\lstdefinestyle{tsql}{
+  language=SQL,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  commentstyle=\color{green!40!black}\itshape,
+  stringstyle=\color{red!60!black},
+  numbers=left, numberstyle=\tiny\color{gray},
+  frame=single, breaklines=true, columns=fullflexible,
+  showstringspaces=false, tabsize=2
+}
+\lstset{style=tsql}
+
+\chapter{Query Optimization and Query Processing Analysis}
+\label{chap:query-processing}
+
+\section{Introduction}
+
+This chapter examines how SQL Server processes the project's representative queries, with emphasis on query optimization, cardinality estimation, statistics, join algorithms, scalar calculations, and parallel execution. The analysis focuses on the baseline database configuration before applying the additional indexes.
+
+The investigation uses actual execution plans, operator properties, SQL Server statistics, and runtime measurements. The execution plans provide evidence of the access paths and processing operators selected by the optimizer, while the statistics and cardinality estimates help explain its decisions. Runtime and I/O observations are used to examine the resulting execution behaviour.
+
+\section{Q1: Patient and MRI Scan Retrieval}
+
+\subsection{Query Characteristics}
+
+Q1 joins \texttt{Patients} and \texttt{MRI\_Scans} using \texttt{PatientID} and filters for patient \texttt{'0001'}. The query returns the patient's information together with the matching MRI scan records.
+
+\subsection{Execution Plan and Join Selection}
+
+Figure~\ref{fig:q1-plan} presents the baseline actual execution plan for Q1. The plan uses a Clustered Index Seek on \texttt{Patients}, followed by a Clustered Index Scan on \texttt{MRI\_Scans}. The two inputs are combined using a Nested Loops (Inner Join) operator.
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q1_execution_plan.png}{0.5\textwidth}{Q1 baseline actual execution plan}
+\caption{Baseline actual execution plan for Q1}
+\label{fig:q1-plan}
+\end{figure}
+
+The seek on \texttt{Patients} returns one row, which forms a small outer input for the Nested Loops operator. The inner input scans \texttt{MRI\_Scans} because the baseline database does not have an index on its \texttt{PatientID} column. The scan reads all 48,345 rows and returns 65 matching rows.
+
+The relevant properties of the Clustered Index Scan are summarized in Table~\ref{tab:q1-scan}.
+
+\newpage
+
+\begin{table}[htbp]
+\centering
+\caption{Q1 Clustered Index Scan properties for \texttt{MRI\_Scans}}
+\label{tab:q1-scan}
+\begin{tabular}{lr}
+\toprule
+Property & Value \\
+\midrule
+Actual rows read & 48,345 \\
+Actual rows returned & 65 \\
+Estimated rows returned & 79.875 \\
+Estimated rows to be read & 48,345 \\
+Actual executions & 1 \\
+Estimated operator cost & 1.44387 (98\% of plan cost) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:q1-operator} provides the detailed operator properties used to obtain these values.
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q1_scan_properties.png}{0.5\textwidth}{Q1 MRI_Scans Clustered Index Scan properties}
+\caption{Actual and estimated properties of the Q1 Clustered Index Scan}
+\label{fig:q1-operator}
+\end{figure}
+
+The optimizer's choice of Nested Loops is consistent with the one-row outer input. However, the absence of an index on the inner input's join column means that the scan must examine the entire \texttt{MRI\_Scans} table. Therefore, the principal inefficiency in this baseline plan is the amount of data read, rather than a large cardinality-estimation error.
+
+\subsection{Cardinality Estimation}
+
+The Clustered Index Seek on \texttt{Patients} estimates one row and returns one row. For the scan on \texttt{MRI\_Scans}, SQL Server estimates 79.875 matching rows, while the actual number is 65.
+
+The Q-error is calculated as:
+
+\[
+Q\text{-error}=
+\max\left(
+\frac{79.875}{65},
+\frac{65}{79.875}
+\right)
+\approx 1.23.
+\]
+
+The estimate is therefore approximately 23\% higher than the actual result. This is a relatively small estimation error for this query.
+
+\subsection{Statistics for \texttt{MRI\_Scans.PatientID}}
+
+The following query retrieves the statistics information for \texttt{MRI\_Scans.PatientID}, including its header, density vector, and histogram.
+
+\begin{lstlisting}[caption={Retrieving Q1 statistics for MRI\_Scans.PatientID},
+                   label={lst:q1-statistics}]
+DBCC SHOW_STATISTICS (
+    'dbo.MRI_Scans',
+    '_WA_Sys_00000002_4BAC3F29'
+);
+GO
+\end{lstlisting}
+
+The statistics metadata and density information, together with histogram entries, are summarized in Tables~\ref{tab:q1-statistics} and \ref{tab:q1_patientid_histogram}, respectively.
+
+\begin{table}[htbp]
+\centering
+\caption{Statistics Metadata and Density Information for \texttt{MRI\_Scans.PatientID}}
+\label{tab:q1-statistics}
+\begin{tabular}{lr}
+\toprule
+Property & Value \\
+\midrule
+Rows & 48,345 \\
+Rows sampled & 32,599 \\
+Sampling percentage & 67.43\% \\
+Steps & 200 \\
+Density & 0.02050357 \\
+Average key length & 4 \\
+String index & YES \\
+Unfiltered rows & 48,345 \\
+Modification counter & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Histogram Entries for \texttt{MRI\_Scans.PatientID}}
+\label{tab:q1_patientid_histogram}
+\begin{tabular}{|r|r|r|r|r|}
+\hline
+RANGE\_HI\_KEY & RANGE\_ROWS & EQ\_ROWS &
+DISTINCT\_RANGE\_ROWS & AVG\_RANGE\_ROWS \\
+\hline
+0001 & 0 & 79.87501 & 0 & 1 \\
+\hline
+0003 & 52.05838 & 105.0208 & 1 & 51.85342 \\
+\hline
+0007 & 182.948 & 144.9583 & 3 & 60.8224 \\
+\hline
+0009 & 74.36911 & 94.66667 & 1 & 74.07632 \\
+\hline
+0011 & 69.90696 & 103.5417 & 1 & 69.63174 \\
+\hline
+\multicolumn{5}{|c|}{$\vdots$} \\
+\hline
+0565 & 188.8975 & 35.5 & 2 & 94.16961 \\
+\hline
+0568 & 80.31863 & 109.4583 & 1 & 80.00242 \\
+\hline
+0571 & 239.4685 & 127.2083 & 2 & 119.3804 \\
+\hline
+0573 & 65.44482 & 221.875 & 1 & 65.18716 \\
+\hline
+0575 & 0.1880675 & 79.87501 & 0 & 95.16214 \\
+\hline
+\end{tabular}
+\end{table}
+
+The histogram contains an exact entry for \texttt{PatientID = '0001'}, with \texttt{EQ\_ROWS = 79.87501}. This corresponds to the optimizer's estimated cardinality of approximately 79.875 rows in the execution plan. Compared with the 65 actual matching rows, this represents an overestimation of approximately 23\%.
+
+This indicates that the histogram provides a reasonably close estimate for the equality predicate. However, the statistics estimate does not change the access path: without an index on \texttt{MRI\_Scans.PatientID}, SQL Server still performs a Clustered Index Scan.
+
+\subsection{Runtime and I/O Observations}
+
+The captured execution plan reports 1,880 logical reads, 3 physical reads, and 1,874 read-ahead reads for the \texttt{MRI\_Scans} scan. The query consumed approximately 369 ms of CPU time, while its elapsed time was approximately 76.3 seconds.
+
+The substantial difference between CPU and elapsed time indicates that the query spent considerably more time waiting than actively processing data. The most prominent reported wait was \texttt{SLEEP\_BPOOL\_STEAL}, accounting for approximately 75.9 seconds. However, the available execution-plan data does not establish the underlying cause of this wait, so the elapsed time should not be treated as a representative measure of the scan's processing cost without further investigation.
+
+The plan also reports that it was retrieved from cache. This means the captured execution reused a cached execution plan rather than requiring a fresh compilation. The runtime and I/O measurements are therefore recorded as observations from this particular execution, rather than as definitive performance characteristics of Q1.
+
+\section{Q3: Nearest-Neighbor Feature Search}
+
+\subsection{Query Characteristics}
+
+Q3 retrieves the feature vector for target scan \texttt{ScanID = 1}, calculates the Euclidean distance between that vector and the other feature vectors, joins the feature records with MRI scan metadata, and returns the three records with the smallest distances.
+
+The distance expression uses four feature dimensions:
+
+\[
+d=\sqrt{
+(f_1-T_1)^2+
+(f_2-T_2)^2+
+(f_3-T_3)^2+
+(f_4-T_4)^2
+},
+\]
+
+where $f_1,\ldots,f_4$ are the candidate feature values and $T_1,\ldots,T_4$ are the target feature values.
+
+\subsection{Execution Plan and Join Algorithm}
+
+Figure~\ref{fig:q3-plan} presents the baseline actual execution plan for the main nearest-neighbor query.
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q3_execution_plan.png}{0.95\textwidth}{Q3 baseline parallel actual execution plan}
+\caption{Baseline actual execution plan for Q3}
+\label{fig:q3-plan}
+\end{figure}
+
+Unlike Q1 and Q2, the baseline plan uses a Hash Match (Inner Join) to combine \texttt{Image\_Features} and \texttt{MRI\_Scans}. Both tables are accessed through Clustered Index Scans. The results are repartitioned by \texttt{ScanID} before being processed by the parallel Hash Match operator.
+
+The Hash Match operator estimates 43,475.4 output rows and produces 48,344 actual rows. Its Q-error is:
+
+\[
+Q\text{-error}=
+\max\left(
+\frac{48,344}{43,475.4},
+\frac{43,475.4}{48,344}
+\right)
+\approx 1.11.
+\]
+
+The optimizer therefore underestimates the join output by approximately 10.1\%. Compared with Q1 and Q2, Q3 joins substantially larger inputs, making Hash Match an appropriate join strategy for this workload.
+
+The relevant scan and join properties are summarized in Table~\ref{tab:q3-cardinality}.
+
+\begin{table}[htbp]
+\centering
+\caption{Q3 scan and join cardinality}
+\label{tab:q3-cardinality}
+\begin{tabular}{lrr}
+\toprule
+Operator & Estimated rows & Actual rows \\
+\midrule
+\texttt{Image\_Features} scan & -- & 48,345 read; 48,344 returned \\
+\texttt{MRI\_Scans} scan & -- & 48,345 read; 48,345 returned \\
+Hash Match & 43,475.4 & 48,344 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The \texttt{Image\_Features} scan applies \texttt{ScanID <> @TargetScanID} as a residual predicate, returning 48,344 rows. The \texttt{MRI\_Scans} scan reads all 48,345 rows.
+
+\subsection{Parallel Execution}
+
+The main Q3 query uses a degree of parallelism of eight. Figure~\ref{fig:q3-parallel} highlights the parallelism operators and data flow surrounding the Hash Match operator.
+
+\newpage
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q3_parallel_operators.png}{0.5\textwidth}{Q3 Repartition Streams, Hash Match, and Gather Streams}
+\caption{Parallel data flow in the Q3 execution plan}
+\label{fig:q3-parallel}
+\end{figure}
+
+The plan uses Repartition Streams to distribute rows by \texttt{ScanID} before the join and Gather Streams to collect the sorted results. The per-thread counters for the Hash Match operator sum to 48,344 rows across the eight active workers.
+
+The Top-N Sort performs local sorting with \texttt{Top Rows = 3} on each worker. This produces up to 24 local candidates before the results are gathered. A final Top operator then returns the three globally closest records.
+
+The separate statement that retrieves the target feature vector has a degree of parallelism of one. Therefore, the parallel execution described here applies to the main nearest-neighbor query rather than the preliminary lookup.
+
+\subsection{Statistics Used for Cardinality Estimation}
+
+The following query retrieves the statistics information for \texttt{Image\_Features.ScanID}, including its header, density vector, and histogram.
+
+\begin{lstlisting}[caption={Retrieving Q3 statistics for Image\_Features.ScanID},
+                   label={lst:q3-statistics}]
+DBCC SHOW_STATISTICS (
+    'dbo.Image_Features',
+    'UQ__Image_Fe__63B32660DF05EFC2'
+);
+GO
+\end{lstlisting}
+
+The header of the statistics object \texttt{UQ\_\_Image\_Fe\_\_63B32660DF05EFC2}, associated with \texttt{Image\_Features.ScanID}, is summarized in Table~\ref{tab:q3-statistics}.
+
+\begin{table}[htbp]
+\centering
+\caption{Statistics Metadata and Density Information for \texttt{Image\_Features.ScanID}}
+\label{tab:q3-statistics}
+\begin{tabular}{lr}
+\toprule
+Property & Value \\
+\midrule
+Rows & 48,345 \\
+Rows sampled & 18,900 \\
+Sampling percentage & 39.09\% \\
+Steps & 175 \\
+Density & 2.377895E-05 \\
+Average key length & 8 bytes \\
+String index & NO \\
+Unfiltered rows & 48,345 \\
+Modification counter & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The histogram for \texttt{ScanID} contains 175 steps, with selected entries summarized in Table~\ref{tab:q3_scanid_histogram}. Each step describes the distribution of values up to its corresponding range boundary.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Histogram Entries for \texttt{Image\_Features.ScanID}}
+\label{tab:q3_scanid_histogram}
+\begin{tabular}{|r|r|r|r|r|}
+\hline
+RANGE\_HI\_KEY & RANGE\_ROWS & EQ\_ROWS &
+DISTINCT\_RANGE\_ROWS & AVG\_RANGE\_ROWS \\
+\hline
+40    & 0        & 1 & 0   & 1 \\
+\hline
+265   & 241.8147 & 1 & 224 & 1.07953 \\
+\hline
+655   & 264.9672 & 1 & 265 & 1.001525 \\
+\hline
+1070  & 162.0673 & 1 & 162 & 1 \\
+\hline
+1445  & 326.7071 & 1 & 326 & 1.002637 \\
+\hline
+\multicolumn{5}{|c|}{$\vdots$} \\
+\hline
+47322 & 326.7071 & 1 & 205 & 1.593693 \\
+\hline
+47580 & 326.7071 & 1 & 257 & 1.271234 \\
+\hline
+48020 & 326.7071 & 1 & 326 & 1.002637 \\
+\hline
+48296 & 272.6846 & 1 & 272 & 1.001691 \\
+\hline
+48297 & 0        & 1 & 0   & 1 \\
+\hline
+\end{tabular}
+\end{table}
+
+Although these statistics describe the indexed join column, the histogram alone does not explain the optimizer's complete cardinality estimate for the Q3 join. The execution plan also uses statistics from the other participating tables and columns. Therefore, the individual contribution of each statistics object to the estimated join cardinality cannot be determined from the available evidence.
+
+\subsection{Compute Scalar and Vector Distance Calculation}
+
+The Compute Scalar operator defines the expression \texttt{Expr1002}, which evaluates the four-dimensional Euclidean distance. The expression performs subtraction and squaring for each dimension, adds the four squared differences, and applies the square-root function. The resulting scalar value is used as the sort key for ranking candidate scans.
+
+Figure~\ref{fig:q3-compute-scalar} presents the Compute Scalar operator and its expression properties.
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q3_compute_scalar.png}{0.5\textwidth}{Q3 Compute Scalar expression properties}
+\caption{Compute Scalar expression for the Euclidean distance}
+\label{fig:q3-compute-scalar}
+\end{figure}
+
+The inspected plan exposes the defined expression and an estimated row count of 43,475.4. In the latest execution-plan capture, the Compute Scalar operator does not expose separate actual-row or execution counters. Consequently, no standalone actual-row count or runtime should be inferred from its properties.
+
+The expression is evaluated as part of the query's processing pipeline before the Top-N Sort uses the calculated distances to select candidate records. This makes the scalar calculation an important part of Q3's workload, although its individual CPU cost cannot be isolated from the available operator properties.
+
+\subsection{Top-N Sort and Result Selection}
+
+The plan contains a Top-N Sort ordered by \texttt{Expr1002} in ascending order, with \texttt{Top Rows = 3}. Figure~\ref{fig:q3-sort} shows the sorting operator and its relevant properties.
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q3_topn_sort.png}{0.5\textwidth}{Q3 Top-N Sort operator properties}
+\caption{Top-N Sort used to rank candidate scans by Euclidean distance}
+\label{fig:q3-sort}
+\end{figure}
+
+The parallel workers perform local Top-N sorting, retaining up to three candidates each. Gather Streams combines these local results, after which the final Top operator returns the three records with the smallest global distances.
+
+This approach avoids sorting every candidate into a complete ordered result set. Instead, the execution plan retains a limited number of candidates from each worker before producing the final result.
+
+\subsection{Reference-Vector Lookup}
+
+Before executing the main nearest-neighbor query, SQL Server retrieves the four feature values for the target scan. This statement uses a Nested Loops plan consisting of an Index Seek on the unique nonclustered index associated with \texttt{Image\_Features.ScanID}, followed by a Clustered Index Seek on \texttt{PK\_Image\_Features} using the retrieved \texttt{FeatureID}.
+
+Figure~\ref{fig:q3-lookup} shows the execution plan for this preliminary lookup.
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q3_reference_lookup.png}{0.5\textwidth}{Q3 reference-vector lookup execution plan}
+\caption{Execution plan for retrieving the target feature vector}
+\label{fig:q3-lookup}
+\end{figure}
+
+Both seek operations return one row. The statement completes in approximately 3 milliseconds, with approximately 3 milliseconds of CPU time. Its execution is therefore negligible compared with the main nearest-neighbor query.
+
+\subsection{Runtime, I/O, and Memory Observations}
+
+The latest execution-plan capture reports an elapsed time of approximately 294 milliseconds and a CPU time of 751 milliseconds for the main query. CPU time exceeds elapsed time because the query executes in parallel, with CPU time accumulated across multiple worker threads.
+
+The two Clustered Index Scans each read 48,345 rows. Their aggregate logical reads, calculated by summing the per-thread counters, are approximately 3,909 for \texttt{Image\_Features} and 1,972 for \texttt{MRI\_Scans}. The coordinator thread reports two physical reads for each table, while the worker-level physical reads are zero. The corresponding read-ahead reads are approximately 3,720 for \texttt{Image\_Features} and 1,874 for \texttt{MRI\_Scans}.
+
+The main query receives a memory grant of 27,648 KB and reports a maximum memory usage of 8,128 KB. The plan also records a memory-grant wait of approximately 106 milliseconds. Thus, the granted memory exceeded the maximum amount used during this execution.
+
+The wait statistics report \texttt{LATCH\_EX} as the largest wait, at approximately 1,517 milliseconds, followed by \texttt{CXSYNC\_PORT} at 327 milliseconds and \texttt{CXPACKET} at 168 milliseconds. These wait times are accumulated across execution threads and can therefore exceed the query's elapsed time. The execution plan does not establish the specific cause of the reported latch waits.
+
+The latest capture also differs from the earlier observation, which reported approximately 78 milliseconds of elapsed time and 303 milliseconds of CPU time. Although both captures reused cached execution plans, their runtime measurements differ. The latest capture is used here as the current runtime observation; the difference indicates that execution time can vary between runs and should be evaluated using repeated measurements under consistent conditions.
