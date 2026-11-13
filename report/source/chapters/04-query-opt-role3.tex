@@ -172,6 +172,145 @@ The substantial difference between CPU and elapsed time indicates that the query
 
 The plan also reports that it was retrieved from cache. This means the captured execution reused a cached execution plan rather than requiring a fresh compilation. The runtime and I/O measurements are therefore recorded as observations from this particular execution, rather than as definitive performance characteristics of Q1.
 
+\section{Q2: Filtered Scan Retrieval by Pulse Sequence}
+
+\subsection{Query Characteristics}
+
+Q2 retrieves the T2-weighted sagittal series of patient \texttt{'0001'} by joining \texttt{Patients} and \texttt{MRI\_Scans} on \texttt{PatientID} and applying the predicate \texttt{SeriesDescription LIKE '\%T2\%SAG\%'}. Clinically, radiologists inspect T2-weighted sagittal series to assess disc herniation and cord compression, so this filtered retrieval is a representative workload for the reporting console.
+
+\subsection{Execution Plan and Join Selection}
+
+Figure~\ref{fig:q2-plan} presents the baseline actual execution plan for Q2. As with Q1, the plan combines a Clustered Index Seek on \texttt{Patients} with a full Clustered Index Scan of \texttt{MRI\_Scans} through a Nested Loops (Inner Join) operator. The scan contributes 96\% of the total plan cost (0.85990 out of 0.89564).
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q2_execution_plan.png}{0.5\textwidth}{Q2 baseline actual execution plan}
+\caption{Baseline actual execution plan for Q2}
+\label{fig:q2-plan}
+\end{figure}
+
+The leading wildcard in the \texttt{LIKE} predicate makes it unsargable: no index can serve a filter of the form \texttt{LIKE '\%T2\%SAG\%'}, so the predicate is evaluated as a residual filter on every row of the scan. The scan reads all 48,345 rows and returns the 15 rows of patient \texttt{'0001'} whose series description matches the pattern.
+
+The relevant properties of the Clustered Index Scan are summarized in Table~\ref{tab:q2-scan}.
+
+\begin{table}[htbp]
+\centering
+\caption{Q2 Clustered Index Scan properties for \texttt{MRI\_Scans}}
+\label{tab:q2-scan}
+\begin{tabular}{lr}
+\toprule
+Property & Value \\
+\midrule
+Actual rows read & 48,345 \\
+Actual rows returned & 15 \\
+Estimated rows returned & 13.8719 \\
+Estimated rows to be read & 48,345 \\
+Actual executions & 1 \\
+Estimated operator cost & 0.85990 (96\% of plan cost) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:q2-operator} provides the detailed operator properties used to obtain these values.
+
+\begin{figure}[htbp]
+\centering
+\planfig{image/role_3/q2_scan_properties.png}{0.5\textwidth}{Q2 MRI_Scans Clustered Index Scan properties}
+\caption{Actual and estimated properties of the Q2 Clustered Index Scan}
+\label{fig:q2-operator}
+\end{figure}
+
+The predicate list shown in the scan properties is \texttt{(SeriesDescription LIKE '\%T2\%SAG\%') AND (@1 = PatientID)}. Both the \texttt{LIKE} expression and the \texttt{PatientID} equality appear as residual predicates rather than seek arguments, a direct consequence of the scan being the chosen access method in the absence of any index on the join column. The plan also reports a missing-index hint suggesting a nonclustered index on \texttt{MRI\_Scans.PatientID} with \texttt{SeriesDescription} and \texttt{ImagePath} as included columns, with an impact of 99.0316\% --- the largest improvement opportunity in the plan. The optimizer therefore identifies the missing join-column index, not a \texttt{SeriesDescription} index, as the dominant optimization target.
+
+\subsection{Cardinality Estimation}
+
+The Clustered Index Seek on \texttt{Patients} estimates one row and returns one row. For the scan on \texttt{MRI\_Scans}, SQL Server estimates 13.8719 matching rows, while the actual number is 15.
+
+The Q-error is calculated as:
+
+\[
+Q\text{-error}=
+\max\left(
+\frac{13.8719}{15},
+\frac{15}{13.8719}
+\right)
+\approx 1.08.
+\]
+
+The estimate is therefore approximately 8\% lower than the actual result, a small error that one would not expect for an unsargable \texttt{LIKE} predicate. The reason is that the optimizer does not fall back to a flat default selectivity: dividing the estimated rows by the \texttt{PatientID} estimate (13.8719 / 79.875) gives an implied \texttt{LIKE} selectivity of approximately 0.174, which is close to the global proportion of \texttt{MRI\_Scans} rows whose series description matches the pattern (9,809 out of 48,345, or 20.3\%). For patient \texttt{'0001'}, all 15 matching slices belong to the single most frequent series in the database, \texttt{T2\_TSE\_SAG\_384\_0002}, so the step-level histogram estimate coincides well with the true value. For patients whose matching slices lie in the long tail of the distribution, the same estimation method would be considerably less reliable.
+
+\subsection{Statistics for \texttt{MRI\_Scans.SeriesDescription}}
+
+The following query retrieves the statistics information for \texttt{MRI\_Scans.SeriesDescription}, including its header, density vector, and histogram. The statistics object \texttt{\_WA\_Sys\_00000004\_4CA06362} is auto-created on \texttt{SeriesDescription}; auto-created statistics names are generated per database instance, so the name should be verified on other deployments (see the lookup query in \texttt{scripts/sql/03\_role\_3\_support.sql}).
+
+\begin{lstlisting}[caption={Retrieving Q2 statistics for MRI\_Scans.SeriesDescription},
+                   label={lst:q2-statistics}]
+DBCC SHOW_STATISTICS (
+    'dbo.MRI_Scans',
+    '_WA_Sys_00000004_4CA06362'
+);
+GO
+\end{lstlisting}
+
+The statistics metadata and density information, together with selected histogram entries, are summarized in Tables~\ref{tab:q2-statistics} and \ref{tab:q2_seriesdescription_histogram}, respectively.
+
+\begin{table}[htbp]
+\centering
+\caption{Statistics Metadata and Density Information for \texttt{MRI\_Scans.SeriesDescription}}
+\label{tab:q2-statistics}
+\begin{tabular}{lr}
+\toprule
+Property & Value \\
+\midrule
+Rows & 48,345 \\
+Rows sampled & 32,510 \\
+Sampling percentage & 67.25\% \\
+Steps & 199 \\
+Density & 0.08955224 \\
+All density & 0.003861004 \\
+Average key length & 68 \\
+String index & YES \\
+Unfiltered rows & 48,345 \\
+Modification counter & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Histogram Entries for \texttt{MRI\_Scans.SeriesDescription}}
+\label{tab:q2_seriesdescription_histogram}
+\begin{tabular}{|r|r|r|r|r|}
+\hline
+RANGE\_HI\_KEY & RANGE\_ROWS & EQ\_ROWS &
+DISTINCT\_RANGE\_ROWS & AVG\_RANGE\_ROWS \\
+\hline
+T2\_TSE\_SAG\_384\_0002  & 0        & 7,256 & 0   & 1 \\
+\hline
+T2\_TSE\_TRA\_384\_0004  & 5,645.2701 & 7,145 & 1 & 5,645.2701 \\
+\hline
+T1\_TSE\_TRA\_0005       & 13,404.7807 & 7,049 & 2 & 3,829.615 \\
+\hline
+T1\_TSE\_SAG\_320\_0003  & 20,765.4104 & 6,878 & 3 & 2,115.4087 \\
+\hline
+\multicolumn{5}{|c|}{$\vdots$} \\
+\hline
+\multicolumn{2}{|r|}{last step} & 1 & 1 & 1 \\
+\hline
+\end{tabular}
+\end{table}
+
+The column holds 289 distinct values across 199 histogram steps, with a heavily skewed distribution: the first step alone (\texttt{T2\_TSE\_SAG\_384\_0002}) holds 7,256 rows, and the four most frequent series codes together cover 28,328 rows, approximately 58.6\% of the table. The tail of the histogram consists of many steps with \texttt{EQ\_ROWS = 1}, which the optimizer samples with reduced precision.
+
+\subsection{Runtime and I/O Observations}
+
+The \texttt{MRI\_Scans} scan performs the same 1,880 logical reads as Q1, because the scan visits the identical 1,876 leaf pages plus overhead. The difference is entirely in the result set: Q2 returns 15 rows instead of Q1's 65. The unsargable \texttt{LIKE} predicate therefore reduces the number of returned rows without reducing the I/O footprint, which confirms that any improvement must come from changing the access path (an index on the join column) rather than from the filter itself.
+
+With a warm buffer pool, the captured run reports 0 physical reads for \texttt{MRI\_Scans} and 2 for \texttt{Patients}, with 15 ms of CPU time and 27 ms of elapsed time. The Q1 capture showed the same I/O footprint with an anomalous elapsed time of approximately 76.3 seconds dominated by a \texttt{SLEEP\_BPOOL\_STEAL} wait, while Q2 completes in under 30 ms. The I/O behaviour of the scan is thus stable across the two queries, and the observed elapsed time is strongly dependent on buffer pool state.
+
+As a cross-reference, the missing-index hint for Q2 matches the covering index \texttt{IX\_MRIScans\_PatientID\_Covering} introduced by Role~2. With that index in place, the same query is served by an Index Seek that reads only the 65 rows belonging to patient \texttt{'0001'}, applying the \texttt{LIKE} predicate as a residual filter on the index rows instead of on the entire table.
+
 \section{Q3: Nearest-Neighbor Feature Search}
 
 \subsection{Query Characteristics}
