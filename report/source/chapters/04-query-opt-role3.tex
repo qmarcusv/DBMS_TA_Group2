@@ -20,6 +20,10 @@ This chapter examines how SQL Server processes the project's representative quer
 
 The investigation uses actual execution plans, operator properties, SQL Server statistics, and runtime measurements. The execution plans provide evidence of the access paths and processing operators selected by the optimizer, while the statistics and cardinality estimates help explain its decisions. Runtime and I/O observations are used to examine the resulting execution behaviour.
 
+% =============================================
+% Q1: Patient and MRI Scan Retrieval
+% =============================================
+
 \section{Q1: Patient and MRI Scan Retrieval}
 
 \subsection{Query Characteristics}
@@ -120,7 +124,7 @@ Density & 0.02050357 \\
 Average key length & 4 \\
 String index & YES \\
 Unfiltered rows & 48,345 \\
-Modification counter & 0 \\
+Persisted sample percent & 0 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -171,6 +175,36 @@ The captured execution plan reports 1,880 logical reads, 3 physical reads, and 1
 The substantial difference between CPU and elapsed time indicates that the query spent considerably more time waiting than actively processing data. The most prominent reported wait was \texttt{SLEEP\_BPOOL\_STEAL}, accounting for approximately 75.9 seconds. However, the available execution-plan data does not establish the underlying cause of this wait, so the elapsed time should not be treated as a representative measure of the scan's processing cost without further investigation.
 
 The plan also reports that it was retrieved from cache. This means the captured execution reused a cached execution plan rather than requiring a fresh compilation. The runtime and I/O measurements are therefore recorded as observations from this particular execution, rather than as definitive performance characteristics of Q1.
+
+\subsection{Nested Loops versus Hash Match for Q1}
+
+To test the optimizer's join choice, Q1 was also executed with \texttt{OPTION (HASH JOIN)}. Table~\ref{tab:q1-join-comparison} compares the two plans.
+
+\begin{table}[htbp]
+\centering
+\caption{Q1: Nested Loops (chosen) versus Hash Match (forced)}
+\label{tab:q1-join-comparison}
+\begin{tabular}{lrr}
+\toprule
+Metric & Nested Loops & Hash Match \\
+\midrule
+Estimated subtree cost & 1.47069 & 1.4915 \\
+Join operator cost & 0.0235 (2\%) & 0.0443 (3\%) \\
+Memory grant (KB) & 0 & 1,072 \\
+Degree of parallelism & 1 & 1 \\
+Estimated / actual join rows & 79.875 / 65 & 79.875 / 65 \\
+Logical reads, \texttt{MRI\_Scans} & 1,880 & 1,880 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both plans read the same 1,880 pages of \texttt{MRI\_Scans}, because the inner table must be scanned in full without an index on \texttt{PatientID}. The forced Hash Match raises the join operator cost from 0.0235 to 0.0443 and requires a 1,072~KB memory grant, with no spill to tempdb (zero Workfile and Worktable reads). The total estimated cost is therefore about 1.4\% higher than the optimizer's chosen plan, which supports its selection of Nested Loops.
+
+However, the scan accounts for most of the plan cost in both cases, so the join algorithm has only a minor influence on Q1. The estimated cardinality of 79.875 rows is unchanged, so the forced join does not alter the Q-error of 1.23.
+
+% =============================================
+% Q2: Filtered Scan Retrieval by Pulse Sequence
+% =============================================
 
 \section{Q2: Filtered Scan Retrieval by Pulse Sequence}
 
@@ -271,7 +305,7 @@ All density & 0.003861004 \\
 Average key length & 68 \\
 String index & YES \\
 Unfiltered rows & 48,345 \\
-Modification counter & 0 \\
+Persisted sample percent & 0 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -310,6 +344,10 @@ The \texttt{MRI\_Scans} scan performs the same 1,880 logical reads as Q1, becaus
 With a warm buffer pool, the captured run reports 0 physical reads for \texttt{MRI\_Scans} and 2 for \texttt{Patients}, with 15 ms of CPU time and 27 ms of elapsed time. The Q1 capture showed the same I/O footprint with an anomalous elapsed time of approximately 76.3 seconds dominated by a \texttt{SLEEP\_BPOOL\_STEAL} wait, while Q2 completes in under 30 ms. The I/O behaviour of the scan is thus stable across the two queries, and the observed elapsed time is strongly dependent on buffer pool state.
 
 As a cross-reference, the missing-index hint for Q2 matches the covering index \texttt{IX\_MRIScans\_PatientID\_Covering} introduced by Role~2. With that index in place, the same query is served by an Index Seek that reads only the 65 rows belonging to patient \texttt{'0001'}, applying the \texttt{LIKE} predicate as a residual filter on the index rows instead of on the entire table.
+
+% =============================================
+% Q3: Nearest-Neighbor Feature Search
+% =============================================
 
 \section{Q3: Nearest-Neighbor Feature Search}
 
@@ -425,7 +463,7 @@ Density & 2.377895E-05 \\
 Average key length & 8 bytes \\
 String index & NO \\
 Unfiltered rows & 48,345 \\
-Modification counter & 0 \\
+Persisted sample percent & 0 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -527,3 +565,38 @@ The main query receives a memory grant of 27,648 KB and reports a maximum memory
 The wait statistics report \texttt{LATCH\_EX} as the largest wait, at approximately 1,517 milliseconds, followed by \texttt{CXSYNC\_PORT} at 327 milliseconds and \texttt{CXPACKET} at 168 milliseconds. These wait times are accumulated across execution threads and can therefore exceed the query's elapsed time. The execution plan does not establish the specific cause of the reported latch waits.
 
 The latest capture also differs from the earlier observation, which reported approximately 78 milliseconds of elapsed time and 303 milliseconds of CPU time. Although both captures reused cached execution plans, their runtime measurements differ. The latest capture is used here as the current runtime observation; the difference indicates that execution time can vary between runs and should be evaluated using repeated measurements under consistent conditions.
+
+\subsection{Hash Match versus Nested Loops for Q3}
+
+The baseline Q3 execution plan uses a parallel Hash Match
+(Inner Join) with a degree of parallelism of 8. To examine
+the optimizer's join algorithm selection, an alternative
+plan was generated using \texttt{OPTION (LOOP JOIN)}.
+Table~\ref{tab:q3-join-comparison} compares their
+estimated execution plan properties.
+
+\begin{table}[htbp]
+\centering
+\caption{Q3: Hash Match versus Nested Loops}
+\label{tab:q3-join-comparison}
+\begin{tabular}{lrr}
+\toprule
+Metric & Hash Match & Nested Loops \\
+\midrule
+Estimated subtree cost & 11.7389 & 22.4434 \\
+Join operator cost & 0.21353 (2\%) & 0.02569 (0\%) \\
+Sort operator cost & -- & 6.8935 (31\%) \\
+Memory grant (KB) & 27,648 & 1,024 \\
+Degree of parallelism & 8 & 8 \\
+Estimated rows & 43,475.4 & 43,475.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Hash Match plan has an estimated subtree cost of 11.7389, compared with 22.4434 for the forced Nested Loops plan. The Nested Loops alternative therefore has approximately 91.2\% higher estimated cost.
+
+Although the Nested Loops operator has a lower estimated cost of 0.02569 than the Hash Match operator at 0.21353, its complete execution plan is more expensive which contains a Sort operator with an estimated cost of 6.8935, accounting for 31\% of the plan cost.
+
+Both plans estimate 43,475.4 output rows. The baseline Hash Match plan produces 48,344 actual rows, resulting in a Q-error of approximately 1.112. The join algorithm change therefore does not alter the estimated cardinality.
+
+Overall, the comparison supports the optimizer's choice of Hash Match because it has the lower estimated subtree cost. The Nested Loops plan's additional sorting requirement is an important contributor to its higher estimated cost.
