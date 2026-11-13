@@ -568,12 +568,7 @@ The latest capture also differs from the earlier observation, which reported app
 
 \subsection{Hash Match versus Nested Loops for Q3}
 
-The baseline Q3 execution plan uses a parallel Hash Match
-(Inner Join) with a degree of parallelism of 8. To examine
-the optimizer's join algorithm selection, an alternative
-plan was generated using \texttt{OPTION (LOOP JOIN)}.
-Table~\ref{tab:q3-join-comparison} compares their
-estimated execution plan properties.
+The baseline Q3 execution plan uses a parallel Hash Match (Inner Join) with a degree of parallelism of 8. To examine the optimizer's join algorithm selection, an alternative plan was generated using \texttt{OPTION (LOOP JOIN)}. Table~\ref{tab:q3-join-comparison} compares their estimated execution plan properties.
 
 \begin{table}[htbp]
 \centering

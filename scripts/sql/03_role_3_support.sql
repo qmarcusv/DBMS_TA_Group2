@@ -71,31 +71,3 @@ WHERE f.ScanID <> @TargetScanID
 ORDER BY EuclideanDistance ASC;
 OPTION (LOOP JOIN);
 GO
-
--- Q3: Compare workload without and with Euclidean distance calculation
-
--- V1: Join + Top 3 baseline (without distance calculation)
-SELECT TOP 3
-    f.ScanID,
-    f.V_Dim1
-FROM Image_Features f
-INNER JOIN MRI_Scans s ON f.ScanID = s.ScanID
-WHERE f.ScanID <> @TargetScanID
-ORDER BY f.V_Dim1 ASC
-OPTION (HASH JOIN, MAXDOP 8);
-
-
--- V2: Join + Euclidean distance + Top 3
-SELECT TOP 3
-    f.ScanID,
-    SQRT(
-        SQUARE(f.V_Dim1 - @T1) +
-        SQUARE(f.V_Dim2 - @T2) +
-        SQUARE(f.V_Dim3 - @T3) +
-        SQUARE(f.V_Dim4 - @T4)
-    ) AS EuclideanDistance
-FROM Image_Features f
-INNER JOIN MRI_Scans s ON f.ScanID = s.ScanID
-WHERE f.ScanID <> @TargetScanID
-ORDER BY EuclideanDistance ASC
-OPTION (HASH JOIN, MAXDOP 8);
