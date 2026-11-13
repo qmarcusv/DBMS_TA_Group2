@@ -228,6 +228,60 @@ WHERE d.name = 'SpineMRI_DBMS'
 GROUP BY b.page_type;
 GO
 
+-- ============================================================================
+-- CANONICAL QUERY 2 BENCHMARK (Role 4: No-Force Read & WAL Verification)
+-- Evaluates Canonical Query 2 (Patient '0001', T2 Sagittal) reading dirty pages
+-- in the Buffer Pool immediately after a transactional update prior to CHECKPOINT.
+-- ============================================================================
+PRINT '';
+PRINT '>>> CANONICAL QUERY 2: Testing No-Force Buffer Pool Read on T2 Sagittal Scans...';
+GO
+
+CHECKPOINT;
+GO
+
+BEGIN TRANSACTION Role4_Canonical_Q2_Test;
+
+-- Modify a T2 Sagittal scan for Patient '0001' in memory (creates Dirty Page)
+UPDATE TOP (1) s
+SET s.AcquisitionDate = GETDATE()
+FROM dbo.Patients p
+INNER JOIN dbo.MRI_Scans s ON p.PatientID = s.PatientID
+WHERE p.PatientID = '0001'
+  AND s.SeriesDescription LIKE '%T2%SAG%';
+
+COMMIT TRANSACTION Role4_Canonical_Q2_Test;
+GO
+
+-- Execute Canonical Query 2 BEFORE Checkpoint (reads committed Dirty Page from RAM)
+SELECT 
+    p.PatientID,
+    p.PatientName,
+    p.ClinicalNotes,
+    s.ScanID,
+    s.SeriesDescription,
+    s.ImagePath
+FROM dbo.Patients p
+INNER JOIN dbo.MRI_Scans s ON p.PatientID = s.PatientID
+WHERE p.PatientID = '0001'
+  AND s.SeriesDescription LIKE '%T2%SAG%';
+GO
+
+-- Verify the Dirty Page in Buffer Pool and WAL log record before flushing
+SELECT 
+    OBJECT_NAME(p.object_id) AS TableName,
+    bd.page_type,
+    COUNT(*) AS CachedPages,
+    SUM(CAST(bd.is_modified AS INT)) AS DirtyPages_PreCheckpoint
+FROM sys.dm_os_buffer_descriptors bd
+JOIN sys.allocation_units au ON bd.allocation_unit_id = au.allocation_unit_id
+JOIN sys.partitions p ON au.container_id = p.hobt_id
+WHERE bd.database_id = DB_ID('SpineMRI_DBMS')
+  AND OBJECT_NAME(p.object_id) IN ('Patients', 'MRI_Scans')
+GROUP BY OBJECT_NAME(p.object_id), bd.page_type;
+
+CHECKPOINT;
+GO
 
 -- ============================================================================
 -- MODULE 4: VIRTUAL LOG FILE (VLF) ARCHITECTURE & LOG SPACE CONSUMPTION

@@ -138,10 +138,10 @@ ORDER BY [Current LSN] DESC;
 \begin{tabularx}{\textwidth}{@{}llllX@{}}
 \toprule
 \textbf{Current LSN} & \textbf{Operation} & \textbf{Context} & \textbf{Previous LSN} & \textbf{Clinical / Engine Interpretation} \\ \midrule
-\code{00000028:000001a4:0001} & \code{LOP\_BEGIN\_XACT} & \code{LCX\_NULL} & \code{00000000:00000000:0000} & Transaction boundary initiated. \\
-\code{00000028:000001a4:0002} & \code{LOP\_INSERT\_ROWS} & \code{LCX\_CLUSTERED} & \code{00000028:000001a4:0001} & Row inserted into \code{MRI\_Scans} Clustered B-Tree. \\
-\code{00000028:000001a4:0003} & \code{LOP\_DELETE\_ROWS} & \code{LCX\_CLUSTERED} & \code{00000028:000001a4:0002} & Compensation operation (CLR) reversing row insert. \\
-\code{00000028:000001a4:0004} & \code{LOP\_ABORT\_XACT} & \code{LCX\_NULL} & \code{00000028:000001a4:0003} & Transaction rolled back and decommissioned. \\ \bottomrule
+\code{00000030:0001517E:0002} & \code{LOP\_BEGIN\_XACT} & \code{LCX\_NULL} & \code{00000000:00000000:0000} & Transaction boundary initiated (\code{0000:000004f8}). \\
+\code{00000030:0001517E:0003} & \code{LOP\_INSERT\_ROWS} & \code{LCX\_CLUSTERED} & \code{00000030:0001517E:0002} & Row inserted at Page \code{0001:00000939}, Slot 18. \\
+\code{00000030:0001517E:0004} & \code{LOP\_DELETE\_ROWS} & \code{LCX\_MARK\_AS\_GHOST} & \code{00000030:0001517E:0002} & Compensation (CLR) ghosting row at Slot 18. \\
+\code{00000030:0001517E:0005} & \code{LOP\_ABORT\_XACT} & \code{LCX\_NULL} & \code{00000030:0001517E:0002} & Transaction rolled back and decommissioned. \\ \bottomrule
 \end{tabularx}
 \end{table}
 
@@ -213,6 +213,6 @@ EXEC sys.xp_readerrorlog 0, 1, 'Recovery of database', 'SpineMRI_DBMS';
 Understanding transaction logging and buffer management directly impacts query performance across the three canonical contracts:
 \begin{itemize}
     \item \textbf{Impact on Query 1 (Point Lookup):} Because Q1 is a read-only query, it generates zero transaction log entries. Operating under the default \code{READ COMMITTED} isolation level, it acquires short-lived shared locks (\code{S}) on rows without participating in WAL logging overhead.
-    \item \textbf{Impact on Query 2 (Sequence Filtering):} In analytical clinical workloads involving filtered scans, the No-Force policy ensures that recent scan insertions remain accessible in the Buffer Pool cache immediately after commit, even before a checkpoint flushes them to disk.
+\item \textbf{Impact on Query 2 (Sequence Filtering):} Canonical Query 2 filters \code{MRI\_Scans} on \code{PatientID = '0001' AND SeriesDescription LIKE '\%T2\%SAG\%'} (returning 15 sagittal slices across clustered data pages). Under SQL Server's \textbf{Steal / No-Force} policy, when a clinician updates or appends a T2 Sagittal slice, the transaction commits immediately once the \code{LOP\_MODIFY\_ROW} / \code{LOP\_INSERT\_ROWS} record is hardened to the active VLF (\code{00000030:0001517E:...}), leaving the modified 8KB leaf page in RAM with \code{is\_modified = 1}. Subsequent executions of Query 2 read this dirty page directly from the volatile Buffer Pool with zero disk read latency and zero WAL write overhead, while the background \code{CHECKPOINT} process asynchronously flushes the dirty page to \code{SpineMRI\_DBMS.mdf}.
     \item \textbf{Impact on Query 3 (AI Feature Search):} Batch ingestion of 48,345 deep learning vectors in Role 1 utilized \code{BULK INSERT ... WITH (TABLOCK)}. By combining bulk loading with an exclusive table lock, SQL Server leverages \textbf{Minimal Logging}, logging only page and extent allocations rather than individual vector rows. This reduced log generation by over 90\%, preventing transaction log exhaustion and maximizing throughput.
 \end{itemize}
