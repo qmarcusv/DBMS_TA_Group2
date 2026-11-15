@@ -14,7 +14,7 @@
   <div class="container">
     <div class="crumbs"><a href="index.html">Overview</a> / Team</div>
     <div class="eyebrow">Group 02 · CO3021</div>
-    <h1>Five roles, one database, one report</h1>
+    <h1>Ten members, five roles, one report</h1>
     <p class="lead">Each role studies one component of the database engine on the same data and the same three queries, so that the results can be compared and combined into a single story.</p>
   </div>
 </header>
@@ -24,19 +24,24 @@
   <div class="container">
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Role</th><th>Member(s) (GitHub user)</th><th>Responsibility and deliverables</th><th>Report</th></tr></thead>
+        <thead><tr><th>Role</th><th>Member (student ID)</th><th>Contribution</th></tr></thead>
         <tbody>
-          <tr><td><b>1 · Data pipeline</b></td><td>Marcus (<code>qmarcusv</code>)</td><td>Cleaning, schema, ingestion comparison, ResNet-18 vectors, definition of Q1–Q3. Also integrated the chapters into one report and this repository.</td><td><a href="report.pdf#page=6">Chapter 1</a></td></tr>
-          <tr><td><b>2 · Indexing</b></td><td>Trung Kien (<code>kiennguyen</code>)</td><td>Storage structure and B-tree depth; covering, filtered and columnstore indexes; plans and I/O benchmark.</td><td><a href="report.pdf#page=10">Chapter 2</a></td></tr>
-          <tr><td><b>3 · Query optimization</b></td><td><code>hlmq168</code> (Q1, Q3) · <code>HuynhKhoi16</code> (Q2)</td><td>Plan analysis of Q1–Q3, statistics, Hash vs. Nested Loops. Group additions: optimizer theory, Merge Join, Seek vs. Scan, cut-off, spill, Adaptive Join, SSMS screenshots.</td><td><a href="report.pdf#page=16">Chapter 3</a></td></tr>
-          <tr><td><b>4 · Transactions</b></td><td><code>ThienLoc</code> (WAL, recovery) · Quang (LSN, Q2 benchmark)</td><td>ACID, WAL, <code>fn_dblog</code>, checkpoint, crash recovery. Group additions: atomicity with and without a transaction, Delayed Durability.</td><td><a href="report.pdf#page=48">Chapter 4</a></td></tr>
-          <tr><td><b>5 · Concurrency</b></td><td>Thai Thien Hai Long (5.1) · <code>Cicilemon05</code> (5.2)</td><td>5.1: anomalies, locks, lock footprint of Q1–Q3. 5.2: deadlocks and Deadlock Graphs, RCSI and Snapshot, lock-wait benchmark.</td><td><a href="report.pdf#page=55">Chapter 5</a></td></tr>
+          <tr><td rowspan="2"><b>1 · Data pipeline</b><br><a href="report.pdf#page=6">Report, chapter 1</a></td><td><b>Vũ Minh Quân</b><br><span class="pill">2212828</span></td><td>Cleaning of reports and DICOM tree, schema design, ingestion comparison, ResNet-18 features, definition of Q1–Q3. Project coordination: integrated the chapters, the repository and this website; integration additions to Chapters 2–4 (see the tooling note).</td></tr>
+          <tr><td><b>Phan Đức Minh</b><br><span class="pill">2352758</span></td><td>Co-member of Role 1: shared work on the data pipeline, schema and ingestion.</td></tr>
+          <tr><td rowspan="2"><b>2 · Indexing</b><br><a href="report.pdf#page=10">Report, chapter 2</a></td><td><b>Nguyễn Trung Kiên</b><br><span class="pill">2252396</span></td><td>Physical storage and B-tree depth; covering, filtered and columnstore index design; execution plans and I/O benchmark of Q1–Q3.</td></tr>
+          <tr><td><b>Triệu Thuận Toàn</b><br><span class="pill">2353196</span></td><td>Co-member of Role 2: shared work on storage structure, index design and benchmark.</td></tr>
+          <tr><td rowspan="2"><b>3 · Query optimization</b><br><a href="report.pdf#page=16">Report, chapter 3</a></td><td><b>Hồ Lê Minh Quân</b><br><span class="pill">2352988</span></td><td>Plan analysis of Q1 and Q3: operators, cardinality estimates, statistics, Hash Match vs. Nested Loops.</td></tr>
+          <tr><td><b>Huỳnh Minh Khôi</b><br><span class="pill">2352608</span></td><td>Plan analysis of Q2 (LIKE estimate, scan properties).</td></tr>
+          <tr><td rowspan="2"><b>4 · Transactions</b><br><a href="report.pdf#page=48">Report, chapter 4</a></td><td><b>Đinh Cao Thiên Lộc</b><br><span class="pill">2352708</span></td><td>ACID, Write-Ahead Logging, buffer pool and checkpoint, crash-recovery simulation, transaction benchmark script.</td></tr>
+          <tr><td><b>Ngô Phương Quang</b><br><span class="pill">2352967</span></td><td>Verification of LSN chains with sys.fn_dblog and the Q2 transaction benchmark.</td></tr>
+          <tr><td rowspan="2"><b>5 · Concurrency</b><br><a href="report.pdf#page=55">Report, chapter 5</a></td><td><b>Thái Thiện Hải Long</b><br><span class="pill">2352699</span></td><td>Part 5.1: anomalies, isolation levels, lock manager and granularity, lock footprint of Q1–Q3.</td></tr>
+          <tr><td><b>Lâm Thanh Phương</b><br><span class="pill">2352951</span></td><td>Part 5.2: deadlock detection and Deadlock Graphs, RCSI and Snapshot, lock-wait benchmark.</td></tr>
         </tbody>
       </table>
     </div>
     <div class="grid g2 mt">
       <div class="card flat"><span class="tag">How we worked</span><p>One shared database backup, one shared set of three queries, one branch per role in Git, and an integration branch that merged the chapters into a single LaTeX report. Numbers were re-measured on one machine so the chapters agree with each other.</p></div>
-      <div class="card flat"><span class="tag">Tooling note</span><p>The integration additions marked above, the measurement scripts behind them and the SSMS screenshots of Chapter&nbsp;3 were produced during integration by Marcus with an AI coding assistant (Claude Code), which drafted text and automated screenshot capture from SSMS. Every figure comes from queries run in SSMS on <code>SpineMRI_DBMS</code> and can be reproduced with the scripts in the repository.</p></div>
+      <div class="card flat"><span class="tag">Tooling note</span><p>The integration additions marked above, the measurement scripts behind them and the SSMS screenshots of Chapter&nbsp;3 were produced during integration by Vũ Minh Quân with an AI coding assistant (Claude Code), which drafted text and automated screenshot capture from SSMS. Every figure comes from queries run in SSMS on <code>SpineMRI_DBMS</code> and can be reproduced with the scripts in the repository.</p></div>
     </div>
     <div class="pager"><a class="btn outline" href="concurrency.html">← Role 5</a><a class="btn solid" href="reproduce.html">Reproduce the results →</a></div>
   </div>
