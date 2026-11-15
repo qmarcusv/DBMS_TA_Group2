@@ -1,0 +1,7 @@
+# local tools and large raw data are never part of the repository
+.vs/
+.claude/
+.vscode/
+01_MRI_Data/
+__pycache__/
+*.pyc

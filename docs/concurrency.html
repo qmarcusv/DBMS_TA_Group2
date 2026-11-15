@@ -116,7 +116,7 @@
         <ul class="tight"><li>Turn on <b>RCSI</b> for this read-heavy clinical database.</li><li>Use <b>Snapshot</b> for long reports that need one consistent picture.</li><li>Always access <code>Patients</code> before <code>MRI_Scans</code>; keep transactions short; retry on 1205.</li><li>Index <code>MRI_Scans.PatientID</code>: Q1/Q2 lock 65 keys instead of 1,874 pages.</li></ul></div>
       <div class="callout warn"><b class="t">Honest limits</b>The reader waited ≈8 s (not 10 s) because it started 2 s after the writer; each scenario was repeated three times. Lock footprints were measured with one writer, not under a production-like load.</div>
     </div>
-    <p class="mt"><a class="btn outline" href="report.pdf#page=55">Read Chapter 5 in the report (p. 55 →)</a></p>
+    <p class="mt"><a class="btn outline" href="DBMS_TA_Group2_report.pdf#page=55">Read Chapter 5 in the report (p. 55 →)</a></p>
     <div class="pager"><a class="btn outline" href="transactions.html">← Role 4</a><a class="btn solid" href="team.html">Team →</a></div>
   </div>
 </section>

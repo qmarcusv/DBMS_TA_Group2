@@ -8,7 +8,7 @@
 | | Link |
 |---|---|
 | 1. Website (summary, one page per role) | <https://qmarcusv.github.io/DBMS_TA_Group2/> |
-| 2. Full report | [`docs/report.pdf`](docs/report.pdf) (also linked from the website) |
+| 2. Full report (PDF) | [`report/DBMS_TA_Group2_report.pdf`](report/DBMS_TA_Group2_report.pdf) (also linked from the website) |
 | 3. This repository | SQL scripts + the instructions below |
 
 This README only explains how to **rebuild the results with SQL Server Management Studio (SSMS)**. The explanations, plans and conclusions are in the report.
@@ -19,6 +19,7 @@ This README only explains how to **rebuild the results with SQL Server Managemen
 
 ```
 README.md
+report/DBMS_TA_Group2_report.pdf   the full report (67 pages)
 data/SpineMRI_DBMS.bak        backup of the finished database (53 MB)
 sql/
   00_canonical_queries.sql    the three queries Q1, Q2, Q3 shared by all roles
@@ -31,7 +32,7 @@ sql/
   04b_role4_atomicity_contrast_and_delayed_durability.sql
   05_concurrency_control_role5.sql
   role5/                      Role 5  - two-session deadlock / RCSI / Snapshot scenarios
-docs/                         the website (GitHub Pages) and report.pdf
+docs/                         the website (GitHub Pages), with a copy of the report PDF
 ```
 
 ## 2. Requirements

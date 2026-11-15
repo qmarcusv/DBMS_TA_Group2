@@ -39,7 +39,7 @@
     footer.className = 'site-footer';
     footer.innerHTML =
       '<div class="container"><div class="cols">' +
-      '<div><h4>Read in this order</h4><p>1 · This website (summary)<br>2 · <a href="report.pdf">Full report (PDF)</a><br>3 · <a href="' + REPO + '">GitHub repository</a></p></div>' +
+      '<div><h4>Read in this order</h4><p>1 · This website (summary)<br>2 · <a href="DBMS_TA_Group2_report.pdf">Full report (PDF)</a><br>3 · <a href="' + REPO + '">GitHub repository</a></p></div>' +
       '<div><h4>The project</h4><p>Workload-driven evaluation of Microsoft SQL Server 2025 on 48,345 lumbar-spine MRI slices.</p></div>' +
       '<div><h4>Course</h4><p>CO3021 – Database Management Systems<br>Ho Chi Minh City University of Technology (HCMUT)<br>Instructor: PhD. Phan Trong Nhan</p></div>' +
       '</div><small>Every number on this site was measured in SQL Server Management Studio on the project database; the scripts are in the repository.</small></div>';
