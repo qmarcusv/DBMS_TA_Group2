@@ -1,246 +1,123 @@
-# Clinical Spine MRI DBMS Project
+# Clinical MRI DBMS — reproduction guide (SSMS)
 
-> **Course:** Database Management Systems (CO3021) — Semester 261  
-> **Institution:** Ho Chi Minh City University of Technology (HCMUT - VNU-HCM)  
-> **Topic:** Clinical MRI Low Back Pain Data Pipeline, Relational Ingestion, and Full-Stack Database Engine Optimization  
-> **Target Database Engine:** Microsoft SQL Server 2025 Enterprise / Developer Edition  
+> **CO3021 – Database Management Systems · Group 02 · HCMUT**
+> Workload-driven evaluation of **Microsoft SQL Server 2025** on 575 patients and 48,345 lumbar-spine MRI slices.
 
----
+**Read in this order:** 1) the website → 2) the report (PDF) → 3) this repository.
 
-## 1. Project Overview & Provenance
+| | Link |
+|---|---|
+| 1. Website (summary, one page per role) | <https://qmarcusv.github.io/DBMS_TA_Group2/> |
+| 2. Full report | [`docs/report.pdf`](docs/report.pdf) (also linked from the website) |
+| 3. This repository | SQL scripts + the instructions below |
 
-This project implements an end-to-end clinical imaging database platform and database engine optimization benchmark using real-world medical data from Mendeley Data:
-* **Dataset:** *A large dataset of lumbar spine MRI for low back pain pre-processing, segmentation, and detection* (doi: 10.17632/k57fr854j2.2).
-* **Clinical Records:** 575 patients with radiological diagnoses and clinician notes extracted from Excel spreadsheets.
-* **Imaging Scans:** 48,345 DICOM/IMA cross-sectional slices organized hierarchically across 515 imaging studies and multi-sequence pulse protocols (T1, T2 sagittal, T2 axial).
-* **AI Embeddings:** 48,345 normalized 512-dimensional feature vectors extracted using a pretrained ResNet-18 deep convolutional neural network on CPU.
+This README only explains how to **rebuild the results with SQL Server Management Studio (SSMS)**. The explanations, plans and conclusions are in the report.
 
 ---
 
-## 2. System Architecture & Storage Strategy
-
-Medical imaging datasets present significant challenges for relational database buffer pools:
-* **Storage Footprint:** Raw DICOM files consume ~13 GB on disk. Storing binary image data directly as `VARBINARY(MAX)` BLOBs inside SQL Server would cause severe buffer pool thrashing, rapid eviction of index/data pages from memory, and unmanageable database growth.
-* **Hybrid Storage Architecture:** 
-  * Structured clinical metadata and relative file paths (`NVARCHAR(500)`) are stored in Microsoft SQL Server (`SpineMRI_DBMS`), keeping the active database footprint compact at **53.6 MB**.
-  * Raw physical slices (`.ima` / `.dcm`) reside on disk in structured subdirectories (`01_MRI_Data/`).
-  * AI feature vectors are stored both as lightweight numerical float dimensions (`V_Dim1` – `V_Dim4`) for high-speed in-engine distance computations and complete 32-element JSON float arrays in `NVARCHAR(MAX)` for application interoperability.
+## 1. Contents
 
 ```
-                      +---------------------------------------+
-                      | Raw Clinical Data (Mendeley Data)    |
-                      | 575 Patients (Excel) + 48,345 Slices  |
-                      +-------------------+-------------------+
-                                          |
-                                          v
-                      +---------------------------------------+
-                      | Python Preprocessing & AI Pipeline    |
-                      | - 01_preprocess.py (Regex, Paths)     |
-                      | - 02_extract_features.py (ResNet-18)  |
-                      +-------------------+-------------------+
-                                          |
-                        +-----------------+-----------------+
-                        |                                   |
-                        v                                   v
-             [Structured Metadata]                 [AI Feature Vectors]
-             - clean_patients.csv (126 KB)         - clean_image_features.csv (15.8 MB)
-             - clean_mri_scans.csv (8.9 MB)         (48,345 embeddings)
-                        |                                   |
-                        +-----------------+-----------------+
-                                          |
-                                          v
-                      +---------------------------------------+
-                      | Microsoft SQL Server 2025             |
-                      | Database: SpineMRI_DBMS (53.6 MB)     |
-                      |  * Patients (575 rows)                |
-                      |  * MRI_Scans (48,345 rows)            |
-                      |  * Image_Features (48,345 rows)       |
-                      +-------------------+-------------------+
-                                          |
-                                          v
-                      +---------------------------------------+
-                      | Canonical Evaluation Queries          |
-                      |  * Q1: Patient lookup & scan join     |
-                      |  * Q2: T2 Sagittal pulse filtering    |
-                      |  * Q3: Top-3 AI similarity retrieval  |
-                      +---------------------------------------+
+README.md
+data/SpineMRI_DBMS.bak        backup of the finished database (53 MB)
+sql/
+  00_canonical_queries.sql    the three queries Q1, Q2, Q3 shared by all roles
+  01_schema_definition.sql    Role 1  - DDL of the three tables
+  02_bulk_import.sql          Role 1  - how the CSV files were loaded (optional)
+  02_role_2_indexing_experiments.sql
+  03_role_3_support.sql       Role 3  - Hash/Loop comparison, statistics
+  03_role_3_experiments.sql   Role 3  - hints, Seek vs Scan, cut-off, spill, Adaptive Join
+  04_transactions_recovery_role4.sql
+  04b_role4_atomicity_contrast_and_delayed_durability.sql
+  05_concurrency_control_role5.sql
+  role5/                      Role 5  - two-session deadlock / RCSI / Snapshot scenarios
+docs/                         the website (GitHub Pages) and report.pdf
 ```
 
----
+## 2. Requirements
 
-## 3. The Canonical Queries Contract (Q1, Q2, Q3)
+* **SQL Server 2025 (version 17.x)**, Developer edition is free, and **SSMS 21/22**. The backup was made on SQL Server 2025, so it cannot be restored on 2022 or older.
+* Run everything on a **development instance**: some scripts use `DBCC DROPCLEANBUFFERS` and clear the procedure cache of this database, and the Role 4 script creates and drops a scratch database.
 
-All team roles evaluate the database engine against the same three standard queries defined in `scripts/sql/00_canonical_queries.sql`:
+## 3. Restore the database (once)
 
-### Query 1: Patient Report & Complete Scan Retrieval
-* **Clinical Purpose:** Given a target patient ID, retrieve clinical notes and all associated MRI slices.
-* **Engine Focus:** Evaluates Clustered Index Seek on primary key vs. Table Scan, and verifies join selectivity (1-to-N join).
+**With the SSMS wizard.** Connect to your instance → right-click **Databases → Restore Database…** → **Device** → **…** → **Add** → select `data/SpineMRI_DBMS.bak` → **OK**. Tick *Overwrite the existing database* if it already exists.
+
+**With T-SQL** (change the three paths):
+
 ```sql
-SELECT 
-    p.PatientID, p.PatientName, p.ClinicalNotes,
-    s.ScanID, s.SeriesDescription, s.ImagePath
-FROM Patients p
-INNER JOIN MRI_Scans s ON p.PatientID = s.PatientID
-WHERE p.PatientID = '0001';
-```
-
-### Query 2: Filtered Scan Retrieval by Pulse Sequence (T2 Sagittal)
-* **Clinical Purpose:** Radiologists specifically inspect T2-weighted sagittal series to diagnose spinal disc herniation and cord compression.
-* **Engine Focus:** Evaluates multi-predicate filtering (`PatientID = '0001' AND SeriesDescription LIKE '%T2%SAG%'`), filtered index effectiveness, and cardinality estimation via statistics histograms.
-```sql
-SELECT 
-    p.PatientID, p.PatientName, p.ClinicalNotes,
-    s.ScanID, s.SeriesDescription, s.ImagePath
-FROM Patients p
-INNER JOIN MRI_Scans s ON p.PatientID = s.PatientID
-WHERE p.PatientID = '0001'
-  AND s.SeriesDescription LIKE '%T2%SAG%';
-```
-
-### Query 3: AI Feature Similarity Retrieval (Content-Based Image Retrieval)
-* **Clinical Purpose:** Find the top-3 most visually and structurally similar MRI slices compared to a target slice (`ScanID = 1`).
-* **Engine Focus:** Evaluates batch vector Euclidean distance calculations, Compute Scalar operators, Top-N Sort, and Rowstore vs. Columnstore performance.
-```sql
-DECLARE @TargetScanID INT = 1;
-DECLARE @T1 FLOAT, @T2 FLOAT, @T3 FLOAT, @T4 FLOAT;
-
-SELECT @T1 = V_Dim1, @T2 = V_Dim2, @T3 = V_Dim3, @T4 = V_Dim4 
-FROM Image_Features WHERE ScanID = @TargetScanID;
-
-SELECT TOP 3
-    s.ScanID, s.PatientID, s.SeriesDescription, s.ImagePath,
-    SQRT(
-        SQUARE(f.V_Dim1 - @T1) + SQUARE(f.V_Dim2 - @T2) + 
-        SQUARE(f.V_Dim3 - @T3) + SQUARE(f.V_Dim4 - @T4)
-    ) AS EuclideanDistance
-FROM Image_Features f
-INNER JOIN MRI_Scans s ON f.ScanID = s.ScanID
-WHERE f.ScanID <> @TargetScanID
-ORDER BY EuclideanDistance ASC;
-```
-
----
-
-## 4. Quick Start: Restoring the Database
-
-The complete database backup is provided at `data/SpineMRI_DBMS.bak` (53.6 MB) with 100% of all 575 patients, 48,345 scans, and 48,345 feature vectors already populated.
-
-### Option A: Restore via T-SQL (Fastest — ~0.2 seconds)
-Open SQL Server Management Studio (SSMS) or `sqlcmd` and execute:
-```sql
-USE master;
-GO
-
 RESTORE DATABASE SpineMRI_DBMS
-FROM DISK = 'W:\MYSELF\HCMUT-university\Senior\HK_261\DBMS\BTL\TA\data\SpineMRI_DBMS.bak'
-WITH REPLACE, RECOVERY;
-GO
+FROM DISK = N'C:\path\to\data\SpineMRI_DBMS.bak'
+WITH MOVE N'SpineMRI_DBMS'     TO N'C:\SQLData\SpineMRI_DBMS.mdf',
+     MOVE N'SpineMRI_DBMS_log' TO N'C:\SQLData\SpineMRI_DBMS_log.ldf',
+     REPLACE, STATS = 10;
+```
 
--- Verify table counts
+**Check the restore** (expected: 575, 48,345, 48,345):
+
+```sql
 USE SpineMRI_DBMS;
-SELECT 'Patients' AS [Table], COUNT(*) AS [Rows] FROM Patients
-UNION ALL
-SELECT 'MRI_Scans', COUNT(*) FROM MRI_Scans
-UNION ALL
-SELECT 'Image_Features', COUNT(*) FROM Image_Features;
-```
-*(Adjust the file path in `FROM DISK = '...'` to match your local repository directory).*
-
-### Option B: Restore via SSMS GUI
-1. In SSMS Object Explorer, right-click **Databases** -> **Restore Database...**
-2. Choose **Device**, click `...`, and add `TA/data/SpineMRI_DBMS.bak`.
-3. In the **Options** page, check **Overwrite the existing database (WITH REPLACE)**.
-4. Click **OK**.
-
----
-
-## 5. Running the Pipeline from Scratch (Optional)
-
-If you wish to re-run data cleaning, feature extraction, and ingestion:
-
-### Prerequisites
-* Windows 10/11 with Python 3.10+
-* Microsoft SQL Server 2019/2022/2025
-* Python dependencies:
-  ```bash
-  pip install torch torchvision pydicom pandas openpyxl pillow
-  ```
-
-### Step 1: Preprocessing DICOM Files and Notes
-```bash
-python scripts/01_preprocess.py
-```
-Outputs `data/clean_patients.csv` and `data/clean_mri_scans.csv`.
-
-### Step 2: DDL Schema Creation
-Execute `scripts/sql/01_schema_definition.sql` in SSMS to create tables, primary keys, and foreign keys.
-
-### Step 3: ResNet-18 Feature Extraction
-```bash
-python scripts/02_extract_features.py
-```
-Extracts feature vectors for all 48,345 slices using ResNet-18 on CPU and writes `data/clean_image_features.csv`. Supports automatic checkpoint resuming.
-
-### Step 4: Bulk Data Ingestion
-Execute `scripts/sql/02_bulk_import.sql` in SSMS. Uses view-based bulk insertion to seamlessly manage identity columns and tablocks.
-
----
-
-## 6. Repository Structure
-
-```
-TA/
-├── .gitignore                      # Excludes raw images, archives, LaTeX build temp files
-├── README.md                       # Project documentation and reproduction guide
-├── Radiologists_Report.xlsx        # Raw clinician notes from Mendeley Data
-├── data/
-│   ├── SpineMRI_DBMS.bak           # Complete SQL Server database backup (53.6 MB)
-│   ├── clean_patients.csv          # Cleaned patients table (575 rows, 126 KB)
-│   ├── clean_mri_scans.csv         # Cleaned scans metadata table (48,345 rows, 8.9 MB)
-│   └── clean_image_features.csv    # Deep learning feature vectors (48,345 rows, 15.8 MB)
-├── scripts/
-│   ├── 01_preprocess.py            # Cleans Excel notes and indexes DICOM directory tree
-│   ├── 02_extract_features.py      # ResNet-18 CPU batch feature extraction pipeline
-│   └── sql/
-│       ├── 00_canonical_queries.sql    # Standard Q1, Q2, Q3 benchmark queries
-│       ├── 01_schema_definition.sql    # DDL schema definition and constraints
-│       └── 02_bulk_import.sql          # Bulk import pipeline with IDENTITY views
-└── report/
-    ├── main.tex                    # Master LaTeX report (HCMUT corporate style)
-    ├── main.pdf                    # Compiled report PDF (10 pages)
-    ├── README.md                   # LaTeX compilation guide
-    ├── image/                      # HCMUT insignia and visual assets
-    └── source/
-        └── chapters/
-            ├── 01-introduction.tex       # Chapter 1: Overview & Canonical Queries
-            ├── 02-datapipeline-role1.tex # Chapter 2: Data Pipeline & Storage (Role 1)
-            ├── 03-indexing-role2.tex     # Chapter 3: Indexing Structures (Role 2)
-            ├── 04-query-opt-role3.tex    # Chapter 4: Query Optimization (Role 3)
-            ├── 05-transactions-role4.tex # Chapter 5: Transactions & Recovery (Role 4)
-            └── 06-concurrency-role5.tex  # Chapter 6: Concurrency Control (Role 5)
+SELECT (SELECT COUNT(*) FROM Patients)       AS Patients,
+       (SELECT COUNT(*) FROM MRI_Scans)      AS Scans,
+       (SELECT COUNT(*) FROM Image_Features) AS Features;
 ```
 
----
+## 4. How to run a script
 
-## 7. Role Division & Optimization Matrix
+1. **File → Open → File…** and open the script.
+2. For plans: **Query → Include Actual Execution Plan** (`Ctrl+M`). The Role 2 and Role 3 scripts switch on `SET STATISTICS IO, TIME` themselves: read logical reads and times in the **Messages** tab (for other scripts run `SET STATISTICS IO ON; SET STATISTICS TIME ON;` first). If you reconnect, the setting is lost: run it again.
+3. **Select the block you want** (the scripts are divided into numbered sections with comments) and press **F5**. Do not run a whole experiment file at once unless it says so.
+4. Hover over an operator in the **Execution plan** tab to see *Estimated Subtree Cost*, estimated and actual rows. Press `F4` on the first operator for the memory grant and the “Reason for early termination”.
+5. Every experiment that creates objects removes them again (`ROLLBACK`/`DROP`). Section 8 of `03_role_3_experiments.sql` checks that the database is back to its baseline.
 
-| Role | Core Domain | Scope in SpineMRI_DBMS | Key Deliverables & Benchmark Focus |
-| :--- | :--- | :--- | :--- |
-| **Role 1** | **Data Platform Lead** | Tasks 2, 3, 4, 5, 6 | Data cleaning, schema DDL, bulk ingestion, ResNet-18 AI pipeline, repository structure, technical report coordination. |
-| **Role 2** | **Storage & Indexing** | Physical Database Engine | Non-clustered indexes on `SeriesDescription`, filtered index for `T2%SAG%`, Columnstore index on `Image_Features(V_Dim1..4)`, B-Tree depth analysis. |
-| **Role 3** | **Query Processing** | Query Optimizer & Execution | Execution plan analysis across Q1–Q3, statistics histograms, Nested Loops vs. Hash Match joins, cardinality estimation, Compute Scalar vector costs. |
-| **Role 4** | **Transaction & Logging** | ACID & WAL Engine | Write-Ahead Logging (WAL) internals, `sys.fn_dblog()`, Dirty Page flushing, CHECK constraint rollback validation, Crash recovery simulation. |
-| **Role 5** | **Concurrency & Locks** | Lock Manager & Isolation | `sys.dm_tran_locks` monitoring, Dirty Read/Non-repeatable Read/Phantom Read reproduction across Read Committed, Snapshot, and Serializable isolation levels. |
+Cold-cache protocol used by the scripts before a measurement (dev instance only):
 
----
-
-## 8. Report Compilation
-
-The project technical report is written in LaTeX conforming to the official HCMUT format.
-To compile the PDF report:
-```powershell
-cd report
-pdflatex -interaction=nonstopmode main.tex
-pdflatex -interaction=nonstopmode main.tex
+```sql
+CHECKPOINT; DBCC DROPCLEANBUFFERS;
+ALTER DATABASE SCOPED CONFIGURATION CLEAR PROCEDURE_CACHE;
 ```
-Output: `report/main.pdf` (10 pages, 0 compilation errors).
+
+## 5. Results you should obtain
+
+Page counts reproduce exactly. Estimated rows depend on sampled statistics, and times, memory grants and the degree of parallelism depend on your machine; plan shapes and the ratios between alternatives stay the same.
+
+| Role | Script / section | Expected result |
+|---|---|---|
+| all | `00_canonical_queries.sql` | Q1 → 65 rows, Q2 → 15 rows, Q3 → 3 rows |
+| 2 | `02_role_2_indexing_experiments.sql` | Q1/Q2: **1,880 → 6** logical reads on `MRI_Scans`; Q3 baseline 3,909 + 1,972 reads |
+| 3 | `03_role_3_experiments.sql` §1 | Q1 estimated subtree cost ≈ 1.47, scan = 98 % of it; 1,880 reads |
+| 3 | §2 (hints) | Q3 forced `LOOP JOIN` ≈ 3.4 × the cost of `HASH JOIN`; ≈ 148,000 reads on `MRI_Scans` |
+| 3 | §4 (Seek vs Scan) | Q1 with the temporary index: 210 reads; range `PatientID <= '0100'` → scan + Hash Match again |
+| 3 | §5 (cut-off) | `Reason For Early Termination = Time Out`; counter `timeout` +1 (run with `Ctrl+M` **off**) |
+| 3 | §6 (spill) | yellow warning on Sort (spill level 2) and Hash Match (level 3) |
+| 3 | §7 (Adaptive Join) | operator *Adaptive Join*, threshold ≈ 1,025.83, Actual Join Type = HashMatch |
+| 4 | `04b_…` Part A | without a transaction: 1 orphan `Patients` row; with `BEGIN TRAN`/`ROLLBACK`: 0 / 0 |
+| 4 | `04b_…` Part B | 5,000 commits: delayed durability is several times faster than full durability |
+| 5 | `role5/` | see section 6 |
+
+## 6. Role 5 — two sessions
+
+Open **two query windows** (= two sessions). Press **F5** in window A, then switch to window B and press **F5** while A is still waiting.
+
+1. Run `role5/00_setup.sql` once.
+2. For each scenario open the A file in window 1 and the B file in window 2; run `role5/99_reset.sql` after **every** scenario.
+
+| Scenario | Window A (F5 first) | Window B | You see |
+|---|---|---|---|
+| Deadlock | `01_deadlock_A.sql` | `01_deadlock_B.sql` (within ≈ 4 s) | one session gets error **1205** |
+| Deadlock, priority | `01_deadlock_A.sql` with `SET DEADLOCK_PRIORITY LOW;` | `01_deadlock_B.sql` | A becomes the victim |
+| Deadlock graph | `01_deadlock_graph.sql` | | XML to save as `.xdl` and open in SSMS |
+| Lock timeout | `04_queries_A_writer.sql` | `01_lock_timeout_B_Q1.sql` | error **1222** |
+| Locking | `02_rcsi_A_writer.sql` | `02_rcsi_B_reader.sql` | reader waits ≈ 8 s (`LCK_M_S`) |
+| RCSI | run `02_rcsi_0_enable_row_versioning.sql`, then `02_rcsi_A_writer.sql` | `02_rcsi_B_reader.sql` | reader waits 0 ms |
+| Snapshot | `02_rcsi_A_writer.sql` | `02_snapshot_B_reader.sql` | second read still returns the old value |
+| Update conflict | `02_snapshot_C_update_conflict.sql` | `02_rcsi_A_writer.sql` | error **3960** |
+| Q1–Q3 under a writer | `04_queries_A_writer.sql` | `04_queries_B_Q1.sql` / `_Q2` / `_Q3` | wait ≈ 8 s (locking) vs 0 ms (RCSI) |
+
+Index state for the last scenario: `04_queries_index_baseline.sql` (primary keys only) or `04_queries_index_covering.sql` (Role 2 index). Optional third window: `03_lock_monitor.sql` while A waits shows the waits-for edges, the lock table and the version store.
+
+## 7. Notes
+
+* `02_bulk_import.sql` and `01_schema_definition.sql` document how the database was built from the cleaned CSV files; they are **not needed** after the restore.
+* The Python pre-processing and feature-extraction code is described in Chapter 1 of the report and is not part of this repository.
+* The website is plain HTML, CSS and JavaScript in `docs/` and is served by GitHub Pages (*Settings → Pages → Branch `main`, folder `/docs`*).

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Role 1 · Data pipeline | Clinical MRI DBMS</title>
+<link rel="icon" href="assets/img/logo-hcmut.png">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-page="data">
+<div id="site-header"></div>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="crumbs"><a href="index.html">Overview</a> / Role 1</div>
+    <div class="eyebrow">Role 1 · Data pipeline, schema and ingestion</div>
+    <h1>From 13&nbsp;GB of MRI files to a 53&nbsp;MB database you can query</h1>
+    <p class="lead">Before anything can be measured, the data has to be cleaned, modelled and loaded. This role built the database that every other role uses and defined the three queries they all analyse.</p>
+  </div>
+</header>
+
+<main>
+<section class="section tight">
+  <div class="container">
+    <ol class="steps reveal">
+      <li><b>Raw data</b><span>575 reports, 48,345 slices</span></li>
+      <li><b>Pre-process</b><span>clean CSV files</span></li>
+      <li><b>Schema</b><span>3 tables, PK / FK</span></li>
+      <li><b>Bulk import</b><span>BULK INSERT, 1.2 s</span></li>
+      <li><b>AI features</b><span>ResNet-18, 39.9 min</span></li>
+      <li><b>Queries</b><span>Q1, Q2, Q3 contract</span></li>
+    </ol>
+    <div class="kpis">
+      <div class="kpi"><b>575 / 48,345</b><span>patients / MRI slices (515 studies)</span></div>
+      <div class="kpi"><b>13 GB → 53 MB</b><span>image data vs. database footprint</span></div>
+      <div class="kpi"><b>1.1–1.2 s</b><span>load time with <code>bcp</code> / <code>BULK INSERT</code></span></div>
+      <div class="kpi"><b>20.2 img/s</b><span>feature extraction on a 20-thread CPU</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Decision 1</div>
+    <h2>Store the path, not the picture</h2>
+    <p class="lead">A SQL Server data page is only 8&nbsp;KB. Putting 13&nbsp;GB of DICOM binaries into the database would push the useful index and table pages out of memory. We compared the four storage options and kept images on disk.</p>
+    <div class="table-wrap mt">
+      <table>
+        <thead><tr><th></th><th>VARBINARY(MAX)</th><th>FILESTREAM</th><th>FileTable</th><th>Relative path (chosen)</th></tr></thead>
+        <tbody>
+          <tr><td><b>Where the bytes live</b></td><td>inside the .mdf file</td><td>NTFS folders</td><td>NTFS via SMB share</td><td>plain folder on disk</td></tr>
+          <tr><td><b>Buffer pool</b></td><td>heavily polluted</td><td>bypassed</td><td>bypassed</td><td>no footprint</td></tr>
+          <tr><td><b>Backup size</b></td><td>13 GB +</td><td>in backup stream</td><td>in backup stream</td><td class="num">53 MB</td></tr>
+          <tr><td><b>AI tooling</b></td><td>extract through SQL</td><td>Win32 streaming</td><td>direct file path</td><td>native <code>pydicom</code> reads</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Decision 2</div>
+    <h2>A strict schema instead of a wizard's guess</h2>
+    <p>The SSMS import wizard would have created <code>NVARCHAR(MAX)</code> everywhere. We wrote the DDL by hand: compact keys, real foreign keys, and one deliberate <code>CHECK</code> constraint that later lets Role&nbsp;4 trigger a controlled failure.</p>
+    <div class="erd reveal">
+      <div class="tbl"><header>Patients</header><div class="pk">PatientID · PK</div><div>PatientName</div><div>ClinicalNotes</div><div>DiagnosisStatus</div><div>CreatedAt</div></div>
+      <div class="rel">1 ⟵ N</div>
+      <div class="tbl"><header>MRI_Scans</header><div class="pk">ScanID · PK</div><div>PatientID · FK</div><div>SeriesDescription</div><div>ImagePath</div><div>AcquisitionDate</div></div>
+      <div class="rel">1 ⟵ 1</div>
+      <div class="tbl"><header>Image_Features</header><div class="pk">FeatureID · PK</div><div>ScanID · FK, UNIQUE</div><div>FeatureVector (JSON)</div><div>V_Dim1 … V_Dim4 (FLOAT)</div></div>
+    </div>
+    <p class="mt"><code>CK_Series_Valid</code> rejects any series name containing <code>INVALID</code>, producing error&nbsp;547 on demand &mdash; the failure used in the transaction experiments of Role&nbsp;4.</p>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Measured</div>
+    <h2>Four ways to load the data</h2>
+    <div class="grid g2 mt">
+      <div class="bars" data-title="Ingestion time of the dataset" data-sub="seconds (mid-point of the measured range) · lower is better" data-rows='[["SSMS Import Wizard",17.5,"15–20 s","bad"],["Python pyodbc",9,"8–10 s","bad"],["T-SQL BULK INSERT",1.2,"1.2 s","good"],["Command-line bcp",1.1,"1.1 s","good"]]'></div>
+      <div class="card">
+        <h3>Why the difference?</h3>
+        <ul class="tight">
+          <li><b>Minimal logging.</b> <code>BULK INSERT</code> and <code>bcp</code> with <code>TABLOCK</code> write far less log than row-by-row inserts.</li>
+          <li><b>Identity column trap.</b> The 5-column CSV does not match the 6-column table (<code>Msg 7301</code>); an updatable <em>view</em> solves it without format files.</li>
+          <li><b>Reproducibility.</b> The finished database is shared as a <code>.bak</code> backup (53&nbsp;MB), which is also how you restore it in the repository guide.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Query 3 prerequisite</div>
+    <h2>Turning images into numbers</h2>
+    <div class="flow reveal">
+      <div class="node"><b>DICOM slice</b><small>12-bit, parsed with pydicom</small></div><div class="arrow">→</div>
+      <div class="node"><b>224×224×3</b><small>normalised to 0–255</small></div><div class="arrow">→</div>
+      <div class="node"><b>ResNet-18</b><small>ImageNet-pretrained, last layer cut</small></div><div class="arrow">→</div>
+      <div class="node dark"><b>512-d vector</b><small>L2-normalised, 4 dims in FLOAT columns</small></div>
+    </div>
+    <div class="two-col mt">
+      <div class="callout"><b class="t">What this proves</b>Keeping binaries outside the engine keeps the buffer pool for relational work and shrinks the database 250×. Strict typing makes later index and optimizer experiments meaningful.</div>
+      <div class="callout warn"><b class="t">Honest limit</b>SQL Server has no approximate-nearest-neighbour index, so similarity search (Q3) is a full scan of 48,345 vectors. A dedicated vector store would be the production choice.</div>
+    </div>
+    <p class="mt"><a class="btn outline" href="report.pdf#page=6">Read Chapter 1 in the report (p. 6 →)</a></p>
+    <div class="pager"><a class="btn outline" href="index.html">← Overview</a><a class="btn solid" href="indexing.html">Role 2 · Index →</a></div>
+  </div>
+</section>
+</main>
+
+<div id="site-footer"></div>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

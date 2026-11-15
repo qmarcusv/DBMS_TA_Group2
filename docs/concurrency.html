@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Role 5 · Concurrency control | Clinical MRI DBMS</title>
+<link rel="icon" href="assets/img/logo-hcmut.png">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-page="concurrency">
+<div id="site-header"></div>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="crumbs"><a href="index.html">Overview</a> / Role 5</div>
+    <div class="eyebrow">Role 5 · Concurrency control, deadlocks and row versioning</div>
+    <h1>When a doctor reads while another writes: who waits?</h1>
+    <p class="lead">Many users share one database. We reproduced the classic anomalies, measured how long a reader waits behind a writer, captured a real deadlock, and showed how row versioning (RCSI) removes the waiting.</p>
+  </div>
+</header>
+
+<main>
+<section class="section tight">
+  <div class="container">
+    <ol class="steps reveal">
+      <li><b>Anomalies</b><span>dirty, non-repeatable, phantom</span></li>
+      <li><b>Locks</b><span>granularity and modes</span></li>
+      <li><b>Q1–Q3 locks</b><span>DMV evidence</span></li>
+      <li><b>Deadlock</b><span>graph, victim</span></li>
+      <li><b>MVCC</b><span>RCSI, Snapshot</span></li>
+      <li><b>Rules</b><span>recommendations</span></li>
+    </ol>
+    <div class="kpis">
+      <div class="kpi"><b>7,938 → 0 ms</b><span>reader's lock wait: locking vs. RCSI</span></div>
+      <div class="kpi"><b>1.2–1.8 s</b><span>time to detect and break a deadlock</span></div>
+      <div class="kpi"><b>64 KB</b><span>version store needed by RCSI in the test</span></div>
+      <div class="kpi"><b>1,874 → 65</b><span>locks of Q1 with an index on PatientID</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Concepts</div>
+    <h2>Locks have sizes</h2>
+    <p class="lead">SQL Server can lock a row, a page or a whole table. The optimizer picks the access path, and the access path decides the lock footprint: a scan takes page locks, a seek takes a few key locks.</p>
+    <div class="grid g2 mt">
+      <figure class="fig"><img src="assets/img/r5-granularity.png" alt="Lock granularity hierarchy" loading="lazy"><figcaption><b>Lock hierarchy.</b> Intent locks on table and page protect the row locks below.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r5-lock-manager.png" alt="Lock manager architecture" loading="lazy"><figcaption><b>Lock manager.</b> Requests are granted, converted or queued; the lock monitor searches for cycles.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Experiment 3</div>
+    <h2>Q1–Q3 against a concurrent writer</h2>
+    <p>A writer re-labels one slice of patient 0002 and holds its locks for 10&nbsp;seconds. Patient 0002 is not in the result of Q1 or Q2 &mdash; yet:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Index state</th><th>Query</th><th>Locks requested on MRI_Scans</th><th class="num">Wait (locking)</th><th class="num">Wait (RCSI)</th></tr></thead>
+        <tbody>
+          <tr><td rowspan="3">Primary key only</td><td>Q1</td><td>1,874 page locks</td><td class="num">7,969 ms</td><td class="num">0 ms</td></tr>
+          <tr><td>Q2</td><td>1,874 page locks</td><td class="num">7,976 ms</td><td class="num">0 ms</td></tr>
+          <tr><td>Q3</td><td>1,903 page locks (+3,780 on Image_Features)</td><td class="num">7,972 ms</td><td class="num">0 ms</td></tr>
+          <tr class="hl"><td rowspan="3">+ covering index (Role 2)</td><td>Q1</td><td>65 key + 3 page locks</td><td class="num">0 ms</td><td class="num">0 ms</td></tr>
+          <tr class="hl"><td>Q2</td><td>65 key + 3 page locks</td><td class="num">0 ms</td><td class="num">0 ms</td></tr>
+          <tr class="hl"><td>Q3</td><td>1,588 page locks</td><td class="num">7,982 ms</td><td class="num">0 ms</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="grid g2 mt">
+      <div class="callout"><b class="t">Reading the table</b>Without an index, Q1 scans every page and bumps into the writer's page &mdash; it waits ≈8&nbsp;s for a row it does not need. With the covering index it never touches that page. <b>An index also removes blocking.</b> Q3 needs every row, so only versioning can help it.</div>
+      <div class="callout"><b class="t">RCSI</b>With row versioning on, all three queries requested <b>zero</b> row or page locks and never waited, while still returning only committed data.</div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Experiment 1</div>
+    <h2>A deadlock, caught on camera</h2>
+    <p>Session A updates a scan then the patient; session B does the reverse. Each waits for the other &mdash; a cycle. The lock monitor finds it and rolls one session back with error 1205.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Run</th><th class="num">A priority / log used</th><th class="num">B priority / log used</th><th>Victim</th><th class="num">Resolved after</th></tr></thead>
+        <tbody>
+          <tr><td>1 · NORMAL / NORMAL</td><td class="num">0 / 308 B</td><td class="num">0 / 272 B</td><td><b>B</b> (cheaper to undo)</td><td class="num">1.83 s</td></tr>
+          <tr><td>2 · A set to LOW</td><td class="num">−5 / 308 B</td><td class="num">0 / 272 B</td><td><b>A</b> (priority wins over cost)</td><td class="num">1.21 s</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="grid g2 mt">
+      <figure class="fig"><img src="assets/img/r5-deadlock-run1.png" alt="Deadlock graph of run 1 rendered by SSMS" loading="lazy"><figcaption><b>Run 1.</b> Process 63 (session B) is crossed out as the victim.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r5-deadlock-run2.png" alt="Deadlock graph of run 2 rendered by SSMS" loading="lazy"><figcaption><b>Run 2.</b> With <code>DEADLOCK_PRIORITY LOW</code>, session A is sacrificed even though it is more expensive to roll back.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Experiment 2</div>
+    <h2>The reader's view: waiting versus versioning</h2>
+    <div class="tl reveal">
+      <div class="row"><div>Writer (both modes)</div><div class="track"><span class="seg hold" style="left:0;width:100%">holds an exclusive lock for 10 s</span></div></div>
+      <div class="row"><div>Reader · locking</div><div class="track"><span class="seg wait" style="left:20%;width:79%">waits ≈7.9 s (LCK_M_S) → reads "Revised"</span></div></div>
+      <div class="row"><div>Reader · RCSI</div><div class="track"><span class="seg read" style="left:20%;width:12%">0 ms</span></div></div>
+    </div>
+    <div class="grid g3 mt">
+      <div class="card"><span class="tag">RCSI</span><h3>Statement-level snapshot</h3><p>The reader instantly gets the last <em>committed</em> value (“Confirmed”) from the version store (64&nbsp;KB, 8 pages). It may be a few seconds old.</p></div>
+      <div class="card"><span class="tag">Snapshot</span><h3>Transaction-level snapshot</h3><p>A second read inside the same snapshot transaction still returns “Confirmed” although “Revised” is already committed.</p></div>
+      <div class="card"><span class="tag">Conflict</span><h3>Writers still collide</h3><p>A snapshot transaction that tries to update a row changed meanwhile is aborted with <b>error 3960</b>: no lost update, but the application must retry.</p></div>
+    </div>
+    <div class="two-col mt">
+      <div class="callout"><b class="t">Recommendations from the experiments</b>
+        <ul class="tight"><li>Turn on <b>RCSI</b> for this read-heavy clinical database.</li><li>Use <b>Snapshot</b> for long reports that need one consistent picture.</li><li>Always access <code>Patients</code> before <code>MRI_Scans</code>; keep transactions short; retry on 1205.</li><li>Index <code>MRI_Scans.PatientID</code>: Q1/Q2 lock 65 keys instead of 1,874 pages.</li></ul></div>
+      <div class="callout warn"><b class="t">Honest limits</b>The reader waited ≈8 s (not 10 s) because it started 2 s after the writer; each scenario was repeated three times. Lock footprints were measured with one writer, not under a production-like load.</div>
+    </div>
+    <p class="mt"><a class="btn outline" href="report.pdf#page=55">Read Chapter 5 in the report (p. 55 →)</a></p>
+    <div class="pager"><a class="btn outline" href="transactions.html">← Role 4</a><a class="btn solid" href="team.html">Team →</a></div>
+  </div>
+</section>
+</main>
+
+<div id="site-footer"></div>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

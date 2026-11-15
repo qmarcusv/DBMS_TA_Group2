@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Role 3 · Query processing and optimization | Clinical MRI DBMS</title>
+<link rel="icon" href="assets/img/logo-hcmut.png">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-page="optimizer">
+<div id="site-header"></div>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="crumbs"><a href="index.html">Overview</a> / Role 3</div>
+    <div class="eyebrow">Role 3 · Query processing and optimization</div>
+    <h1>The optimizer is a cost estimator &mdash; we tested its judgement</h1>
+    <p class="lead">SQL Server does not run your SQL as written. It estimates the cost of many plans and picks one. We read the real plans of Q1, Q2 and Q3, forced the alternatives, and then broke its estimates on purpose.</p>
+  </div>
+</header>
+
+<main>
+<section class="section tight">
+  <div class="container">
+    <ol class="steps reveal">
+      <li><b>Theory</b><span>parse, bind, optimize, execute</span></li>
+      <li><b>Baseline</b><span>plans of Q1, Q2, Q3</span></li>
+      <li><b>Force joins</b><span>LOOP / HASH / MERGE</span></li>
+      <li><b>Seek vs Scan</b><span>the tipping point</span></li>
+      <li><b>Limits</b><span>cut-off, spill to tempdb</span></li>
+      <li><b>Adaptive Join</b><span>run-time choice</span></li>
+    </ol>
+    <div class="kpis">
+      <div class="kpi"><b>3.4 ×</b><span>cost of Q3 with a forced Nested Loops join</span></div>
+      <div class="kpi"><b>148,138</b><span>pages read by that plan (vs. 1,972)</span></div>
+      <div class="kpi"><b>1,880 → 210</b><span>Q1 reads once a temporary index exists</span></div>
+      <div class="kpi"><b>6,192 pages</b><span>spilled to tempdb after a wrong estimate</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Baseline</div>
+    <h2>What the optimizer chose, and why</h2>
+    <div class="grid g3 mt">
+      <div class="card"><span class="tag">Q1</span><h3>Scan + Nested Loops</h3><p>Seek on <code>Patients</code> (1 row), then a <b>Clustered Index Scan</b> of <code>MRI_Scans</code> = 98 % of the cost (1.44 of 1.47). Estimated 31.17 rows vs. 65 actual &mdash; statistics come from a <em>sample</em>.</p></div>
+      <div class="card"><span class="tag">Q2</span><h3>Same plan, one guess</h3><p>The <code>LIKE '%T2%SAG%'</code> cannot use a histogram; SQL Server uses a <em>string summary</em>: 13.87 estimated vs. 15 actual rows (truth: 20.3 % of the table matches).</p></div>
+      <div class="card"><span class="tag">Q3</span><h3>Parallel Hash Match</h3><p>No filter, so both tables are scanned (DOP 10), hash-joined, and a Top-N sort keeps three rows. Cost 5.10, memory grant 32&nbsp;MB.</p></div>
+    </div>
+    <div class="grid g2 mt">
+      <figure class="fig"><img src="assets/img/r3-q1-plan.png" alt="Actual execution plan of Q1" loading="lazy"><figcaption><b>Q1.</b> The scan of <code>MRI_Scans</code> dominates (98 %).</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r3-q3-plan.png" alt="Actual execution plan of Q3 with properties" loading="lazy"><figcaption><b>Q3.</b> Estimated cost 5.09791, memory grant 32&nbsp;MB, degree of parallelism 10.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Experiment 1</div>
+    <h2>Force the other join algorithms</h2>
+    <p class="lead">A hint removes algorithms from the search space, so the cost of the "wrong" plan can be compared like for like. The optimizer's own choice was never beaten.</p>
+    <div class="grid g3 mt">
+      <div class="bars" data-title="Q1 · estimated cost" data-sub="forced join · own choice: Nested Loops" data-rows='[["Nested Loops (chosen)",1.47049,"1.4705","good"],["Merge Join",1.47597,"1.4760",""],["Hash Match",1.49113,"1.4911",""]]'></div>
+      <div class="bars" data-title="Q2 · estimated cost" data-sub="forced join · own choice: Nested Loops" data-rows='[["Nested Loops (chosen)",1.50909,"1.5091","good"],["Merge Join",1.51464,"1.5146",""],["Hash Match",1.52967,"1.5297",""]]'></div>
+      <div class="bars" data-title="Q3 · estimated cost" data-sub="forced join · own choice: Hash Match" data-rows='[["Hash Match (chosen)",4.83299,"4.83","good"],["Merge Join",5.1647,"5.16",""],["Nested Loops",16.6476,"16.65","bad"]]'></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="bars" data-title="Q3 · pages read on MRI_Scans" data-sub="logical reads · log scale" data-scale="log" data-rows='[["Hash / Merge Join",1972,"1,972","good"],["Nested Loops",148138,"148,138","bad"]]'></div>
+      <div class="callout"><b class="t">Why Nested Loops explodes on Q3</b>It probes <code>MRI_Scans</code> once per outer row &mdash; 48,344 index seeks &mdash; instead of reading it once. For Q1 the outer input is a single row, so the same algorithm is the cheapest. <b>The best algorithm depends on the cardinality of the inputs.</b></div>
+    </div>
+    <div class="grid g3 mt">
+      <figure class="fig"><img src="assets/img/r3-hint-hash.png" alt="Q3 with HASH JOIN hint" loading="lazy"><figcaption><b>HASH:</b> cost 4.83299, grant 24&nbsp;MB.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r3-hint-merge.png" alt="Q3 with MERGE JOIN hint" loading="lazy"><figcaption><b>MERGE:</b> extra Sort, cost 5.1647, grant 23&nbsp;MB, no spill here.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r3-hint-loop.png" alt="Q3 with LOOP JOIN hint" loading="lazy"><figcaption><b>LOOP:</b> cost 16.6476, 148,138 reads on <code>MRI_Scans</code>.</figcaption></figure>
+    </div>
+    <p class="mt" style="font-size:.88rem;color:var(--muted)">The three forced Q3 statements project fewer columns than the canonical Q3, so their costs are comparable with each other (4.83 vs 5.16 vs 16.65), not with 5.10 above.</p>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Experiment 2</div>
+    <h2>Seek or scan? It depends on how many rows match</h2>
+    <p class="lead">We created a temporary index on <code>MRI_Scans(PatientID)</code> inside a transaction and rolled it back afterwards. Choose a scenario:</p>
+    <div class="toggle" data-target="seek-panels">
+      <button data-p="a">Q1 · no index</button>
+      <button data-p="b">Q1 · with index</button>
+      <button data-p="c">100 patients (9,060 rows)</button>
+      <button data-p="d">All patients (48,345 rows)</button>
+    </div>
+    <div id="seek-panels">
+      <div class="panel" data-p="a"><div class="kpis"><div class="kpi"><b>Clustered Index Scan</b><span>+ Nested Loops</span></div><div class="kpi"><b>1.47049</b><span>estimated cost</span></div><div class="kpi"><b>1,880</b><span>logical reads</span></div></div><p>No index on the join column: the whole table is read for 65 rows.</p></div>
+      <div class="panel" data-p="b"><div class="kpis"><div class="kpi"><b>Index Seek + Key Lookup</b><span>+ Nested Loops</span></div><div class="kpi"><b>0.21413</b><span>estimated cost (−85 %)</span></div><div class="kpi"><b>210</b><span>logical reads (−89 %)</span></div></div><p>65 matching keys, 65 lookups of about three pages each &mdash; far fewer than 1,880 pages.</p></div>
+      <div class="panel" data-p="c"><div class="kpis"><div class="kpi"><b>Clustered Index Scan</b><span>+ Hash Match</span></div><div class="kpi"><b>1.56401</b><span>estimated cost</span></div><div class="kpi"><b>1,879</b><span>logical reads</span></div></div><p>9,060 lookups would cost about 27,000 page reads, more than scanning the table once. <b>The optimizer ignores the index</b> &mdash; the tipping point lies between 65 and 9,060 rows.</p></div>
+      <div class="panel" data-p="d"><div class="kpis"><div class="kpi"><b>Clustered Index Scan</b><span>+ Hash Match</span></div><div class="kpi"><b>1.89019</b><span>estimated cost</span></div><div class="kpi"><b>1,879</b><span>logical reads</span></div></div><p>When everything matches, the scan is the only sensible plan; an index adds nothing.</p></div>
+    </div>
+    <div class="grid g2 mt">
+      <figure class="fig"><img src="assets/img/r3-seek-q1.png" alt="Q1 plan with an index seek and key lookup" loading="lazy"><figcaption><b>With the index:</b> Index Seek + Key Lookup (97 % of the plan).</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r3-tipping.png" alt="Plan of the 100-patient range query returning to a scan with hash match" loading="lazy"><figcaption><b>Tipping point:</b> for 9,060 rows the plan falls back to a scan and Hash Match.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Beyond the slides</div>
+    <h2>When estimates go wrong</h2>
+    <div class="grid g3">
+      <div class="card"><span class="tag">Cut-off</span><h3>"Good enough" plans</h3><p>A 14-table join is compiled without running. The optimizer stops with <code>TimeOut</code> after 54&nbsp;ms and returns the best plan found so far, not a proven optimum. The DMV counter <code>timeout</code> rose 21 → 22.</p></div>
+      <div class="card"><span class="tag">Spill</span><h3>Memory grant too small</h3><p>With statistics falsified to "100 rows", a Sort receives 1&nbsp;MB, writes 1,941 pages to tempdb (level 2) and runs 1.5× slower; a Hash Match spills 6,192 pages (level 3).</p></div>
+      <div class="card"><span class="tag">Adaptive</span><h3>Join chosen at run time</h3><p>The Adaptive Join operator appears with a threshold of 1,025.83 rows. In both parameter cases it stayed a Hash Match &mdash; we report that as observed.</p></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="bars" data-title="Sort: elapsed time" data-sub="ms · same query, different statistics" data-rows='[["Correct statistics",369,"369 ms","good"],["Stale statistics (spill)",558,"558 ms","bad"]]'></div>
+      <div class="bars" data-title="Pages spilled to tempdb" data-sub="written and read back" data-rows='[["Sort · correct statistics",0,"0","good"],["Sort · stale statistics",1941,"1,941","bad"],["Hash Match · stale statistics",6192,"6,192","bad"]]'></div>
+    </div>
+    <div class="grid g3 mt">
+      <figure class="fig"><img src="assets/img/r3-cutoff.png" alt="Plan properties showing early termination reason Time Out" loading="lazy"><figcaption><b>Cut-off:</b> <em>Reason For Early Termination = Time Out</em>, CompileTime 54&nbsp;ms.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r3-sort-spill.png" alt="Warning tooltip of a spilling sort" loading="lazy"><figcaption><b>Sort spill:</b> spill level 2, 1,941 pages, granted memory 1,024&nbsp;KB.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r3-hash-spill.png" alt="Warning tooltip of a spilling hash match" loading="lazy"><figcaption><b>Hash spill:</b> spill level 3, 6,192 pages, granted memory 1,152&nbsp;KB.</figcaption></figure>
+    </div>
+    <div class="grid g2 mt">
+      <figure class="fig"><img src="assets/img/r3-adaptive.png" alt="Adaptive Join operator properties" loading="lazy"><figcaption><b>Adaptive Join:</b> threshold 1,025.83, Actual Join Type = HashMatch.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r3-histogram.png" alt="Statistics histogram of PatientID" loading="lazy"><figcaption><b>Statistics:</b> the first <code>PatientID</code> step is <code>'0002'</code>; the sample holds 32,510 of 48,345 rows.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Summary</div>
+    <h2>How SQL Server processed Q1, Q2 and Q3</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>Q1</th><th>Q2</th><th>Q3</th></tr></thead>
+        <tbody>
+          <tr><td><b>Access paths</b></td><td>Seek on Patients, Scan on MRI_Scans</td><td>same; LIKE as residual filter</td><td>two parallel Clustered Index Scans</td></tr>
+          <tr><td><b>Join</b></td><td>Nested Loops (1-row outer)</td><td>Nested Loops</td><td>Hash Match + Repartition Streams</td></tr>
+          <tr><td><b>Estimated vs. actual rows</b></td><td>31.2 vs. 65</td><td>13.9 vs. 15</td><td>48,243 vs. 48,344</td></tr>
+          <tr><td><b>What would change the plan</b></td><td>index on PatientID → Seek, −89 % reads</td><td>same</td><td>columnstore / batch mode (Role 2)</td></tr>
+          <tr><td><b>Statistics used</b></td><td>PatientID histogram</td><td>histogram + string summary</td><td>ScanID histogram, density</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="two-col mt">
+      <div class="callout"><b class="t">What this proves</b>The optimizer's choices are consistent with cost on this data: each forced alternative was equal or more expensive. Quality of estimates depends on sampled statistics, and a wrong estimate has consequences beyond the join choice &mdash; it controls the memory grant and therefore spills.</div>
+      <div class="callout warn"><b class="t">Honest limits</b>Adaptive Join never switched to Nested Loops in our scenario (its build input is always above the threshold). The forced Merge Join did not spill on this machine, although it did in an earlier run on another restore; we did not investigate why.</div>
+    </div>
+    <p class="mt"><a class="btn outline" href="report.pdf#page=16">Read Chapter 3 in the report (p. 16 →)</a></p>
+    <div class="pager"><a class="btn outline" href="indexing.html">← Role 2</a><a class="btn solid" href="transactions.html">Role 4 · Transactions →</a></div>
+  </div>
+</section>
+</main>
+
+<div id="site-footer"></div>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

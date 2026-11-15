@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Role 4 · Transactions, logging and recovery | Clinical MRI DBMS</title>
+<link rel="icon" href="assets/img/logo-hcmut.png">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-page="transactions">
+<div id="site-header"></div>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="crumbs"><a href="index.html">Overview</a> / Role 4</div>
+    <div class="eyebrow">Role 4 · Transactions, write-ahead logging and crash recovery</div>
+    <h1>How SQL Server keeps a half-finished admission from corrupting a patient record</h1>
+    <p class="lead">A scanner sends a corrupt slice in the middle of an admission. Which rows survive? We broke an ingestion on purpose, read the transaction log record by record, and measured what durability costs.</p>
+  </div>
+</header>
+
+<main>
+<section class="section tight">
+  <div class="container">
+    <ol class="steps reveal">
+      <li><b>ACID &amp; WAL</b><span>theory</span></li>
+      <li><b>Atomicity</b><span>CHECK + ROLLBACK</span></li>
+      <li><b>Log inspection</b><span>fn_dblog, LSN chain</span></li>
+      <li><b>Buffer pool</b><span>checkpoint, steal / no-force</span></li>
+      <li><b>Crash recovery</b><span>VLF, undo, redo</span></li>
+      <li><b>Beyond slides</b><span>Delayed Durability</span></li>
+    </ol>
+    <div class="kpis">
+      <div class="kpi"><b>48,345 = 48,345</b><span>row count before and after the failed batch</span></div>
+      <div class="kpi"><b>1 / 0 → 0 / 0</b><span>orphan rows without a transaction → with one</span></div>
+      <div class="kpi"><b>8.7 ×</b><span>faster commits with Delayed Durability</span></div>
+      <div class="kpi"><b>5,013 → 562</b><span>log writes for 5,000 commits</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">The mechanism</div>
+    <h2>Write-ahead logging in one picture</h2>
+    <p class="lead">A change is first described in the log, and the log reaches disk <em>before</em> the commit is acknowledged. Data pages can follow later &mdash; that is why SQL Server is fast <em>and</em> recoverable.</p>
+    <div class="flow reveal mt">
+      <div class="node"><b>1 · UPDATE / INSERT</b><small>page changed in the buffer pool (dirty)</small></div><div class="arrow">→</div>
+      <div class="node"><b>2 · Log record</b><small>written to the log buffer, gets an LSN</small></div><div class="arrow">→</div>
+      <div class="node dark"><b>3 · COMMIT</b><small>log flushed to disk <u>first</u>, then the client is told “done”</small></div><div class="arrow">→</div>
+      <div class="node"><b>4 · Later</b><small>checkpoint / lazy writer flush the dirty data pages</small></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><span class="tag">Steal</span><h3>Dirty pages may leave early</h3><p>A page with uncommitted changes can be written to disk to free memory, so recovery needs an <b>Undo</b> pass.</p></div>
+      <div class="card"><span class="tag">No-force</span><h3>Commit does not write data pages</h3><p>Only the sequential log is forced at commit, so recovery needs a <b>Redo</b> pass. SQL Server runs <b>Steal / No-Force</b> (ARIES: analysis → redo → undo).</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Experiment 1</div>
+    <h2>Atomicity: with and without a transaction</h2>
+    <p>Admitting a patient needs two steps: record the diagnosis (<code>Patients</code>) and store the image path (<code>MRI_Scans</code>). The second step fails on purpose through <code>CK_Series_Valid</code> (error 547).</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>Without a transaction</th><th>With <code>BEGIN TRAN … ROLLBACK</code></th></tr></thead>
+        <tbody>
+          <tr><td><b>Step 1 (diagnosis)</b></td><td>commits on its own</td><td>undone by the rollback</td></tr>
+          <tr><td><b>Step 2 (image path)</b></td><td>fails with error 547</td><td>fails with error 547</td></tr>
+          <tr><td><b>Rows left behind (Patients / MRI_Scans)</b></td><td class="num"><b>1 / 0</b> — an orphan patient</td><td class="num"><b>0 / 0</b> — all or nothing</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="mt">In the report's batch experiment the <code>MRI_Scans</code> count was <b>48,345 before and after</b> the failed ingestion although the first insert had already modified a page in memory.</p>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Experiment 2</div>
+    <h2>Reading the log: an LSN is an address</h2>
+    <div class="two-col">
+      <div>
+        <p>Every log record has a 10-byte <b>Log Sequence Number</b>, shown in hexadecimal as <code>VLF : page : slot</code>, for example <code>00000030:0001517E:0002</code>. Through <code>sys.fn_dblog()</code> we followed a transaction's chain: <code>LOP_BEGIN_XACT</code> → <code>LOP_INSERT_ROWS</code> → <code>LOP_COMMIT_XACT</code>, and for a rolled-back one the compensation records with backward <code>Previous LSN</code> pointers and <code>LOP_ABORT_XACT</code>.</p>
+        <p>The log file is a circle of <b>Virtual Log Files (VLFs)</b>; a checkpoint writes dirty pages and lets the oldest VLFs be reused. The crash-recovery simulation verified the three ARIES phases against the log.</p>
+      </div>
+      <div class="flow">
+        <div class="node"><b>Analysis</b><small>rebuild dirty-page &amp; active-transaction tables</small></div><div class="arrow">→</div>
+        <div class="node"><b>Redo</b><small>repeat history from the oldest dirty page</small></div><div class="arrow">→</div>
+        <div class="node"><b>Undo</b><small>roll back losers, write compensation records</small></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Beyond the slides</div>
+    <h2>Durability is a dial, not a switch</h2>
+    <div class="grid g2">
+      <div class="bars" data-title="5,000 small commits" data-sub="elapsed time (ms) in a scratch database" data-rows='[["Full durability",2907,"2,907 ms","bad"],["Delayed durability",334,"334 ms","good"]]'></div>
+      <div class="bars" data-title="Log writes for the same work" data-sub="number of log flushes" data-rows='[["Full durability",5013,"5,013","bad"],["Delayed durability",562,"562","good"]]'></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="callout"><b class="t">How it works</b><code>COMMIT … WITH (DELAYED_DURABILITY = ON)</code> acknowledges the commit before the log block is flushed, so many commits share one write (log volume 20.6&nbsp;MB → 3.8&nbsp;MB). <code>sp_flush_log</code> forces the flush on demand.</div>
+      <div class="callout warn"><b class="t">The price</b>If the server crashes before the flush, the last acknowledged commits are lost. That is acceptable for bulk loading, never for a diagnosis that a doctor has already been told was saved.</div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card flat"><span class="tag">Checkpoint vs lazy writer</span><p>Performance counters show both background writers active during a workload: the checkpoint wrote 44 pages and the lazy writer 1,101. We only claim that both mechanisms exist and run; the counters do not isolate their effect.</p></div>
+      <div class="card flat"><span class="tag">In-Memory OLTP</span><p>Memory-optimised tables skip page latches and locks and log far less, at the price of RAM. Described in the report; not benchmarked.</p></div>
+    </div>
+    <div class="two-col mt">
+      <div class="callout"><b class="t">What this proves</b>SQL Server guarantees atomicity through the log, not through locks on data: even changes already made in memory are undone, and the log makes every commit durable before it is acknowledged.</div>
+      <div class="callout warn"><b class="t">Honest limit</b>This chapter has numbers and scripts but no screenshots yet; the delayed-durability figures come from a single scratch-database run and are indicative.</div>
+    </div>
+    <p class="mt"><a class="btn outline" href="report.pdf#page=48">Read Chapter 4 in the report (p. 48 →)</a></p>
+    <div class="pager"><a class="btn outline" href="optimizer.html">← Role 3</a><a class="btn solid" href="concurrency.html">Role 5 · Concurrency →</a></div>
+  </div>
+</section>
+</main>
+
+<div id="site-footer"></div>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

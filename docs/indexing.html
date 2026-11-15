@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Role 2 · Storage and indexing | Clinical MRI DBMS</title>
+<link rel="icon" href="assets/img/logo-hcmut.png">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-page="indexing">
+<div id="site-header"></div>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="crumbs"><a href="index.html">Overview</a> / Role 2</div>
+    <div class="eyebrow">Role 2 · Storage and indexing</div>
+    <h1>One missing index made a 65-row lookup read the whole table</h1>
+    <p class="lead">SQL Server does not index foreign keys automatically. We measured the cost of that, designed three kinds of index, and watched the execution plans change from scans to seeks.</p>
+  </div>
+</header>
+
+<main>
+<section class="section tight">
+  <div class="container">
+    <ol class="steps reveal">
+      <li><b>Baseline</b><span>primary keys only</span></li>
+      <li><b>Storage</b><span>B-tree depth 2–3</span></li>
+      <li><b>Design</b><span>covering, filtered, columnstore</span></li>
+      <li><b>Plans</b><span>Scan → Seek</span></li>
+      <li><b>Benchmark</b><span>reads, CPU, time</span></li>
+    </ol>
+    <div class="kpis">
+      <div class="kpi"><b>1,880 → 6</b><span>logical reads, Q1 and Q2 (−99.7 %)</span></div>
+      <div class="kpi"><b>3 levels</b><span>B-tree depth of MRI_Scans and Image_Features</span></div>
+      <div class="kpi"><b>−69 %</b><span>pages read by Q3 with a columnstore index</span></div>
+      <div class="kpi"><b>−38 %</b><span>CPU time of Q3</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">The problem</div>
+    <h2>Why the baseline is slow</h2>
+    <div class="two-col">
+      <div>
+        <p>In the restored database the only indexes are the clustered primary keys. <code>Patients</code> is 2 levels deep (8 leaf pages); <code>MRI_Scans</code> and <code>Image_Features</code> are 3 levels deep (1,876 and 3,900 leaf pages).</p>
+        <p>Because <code>MRI_Scans.PatientID</code> has no index, Q1 and Q2 must scan <b>all 1,876 leaf pages</b> &mdash; 1,880 logical reads &mdash; to return 65 rows (Q1) or 15 rows (Q2). SQL Server even tells us so with a <em>Missing Index</em> warning of 99&nbsp;% impact.</p>
+      </div>
+      <div class="bars" data-title="Pages read to find patient 0001" data-sub="logical reads on MRI_Scans" data-rows='[["Baseline: clustered scan",1880,"1,880","bad"],["Covering index: seek",6,"6","good"]]'></div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Three designs</div>
+    <h2>Which index for which query</h2>
+    <div class="grid g3 mt">
+      <div class="card reveal"><span class="tag">Q1 · Q2</span><h3>Covering B-tree</h3><p><code>(PatientID, SeriesDescription) INCLUDE (ImagePath)</code>. The seek jumps straight to the 65 slices of one patient and needs <b>no Key Lookup</b> because the path is stored in the index leaf.</p></div>
+      <div class="card reveal"><span class="tag">Q2</span><h3>Filtered index</h3><p>A <code>LIKE '%T2%SAG%'</code> predicate is not allowed in a filtered index (<code>Msg 10735</code>). We profiled the column and listed the <b>32 T2-sagittal series codes</b> explicitly.</p></div>
+      <div class="card reveal"><span class="tag">Q3</span><h3>Columnstore</h3><p>A non-clustered columnstore on <code>ScanID, V_Dim1…4</code> stores the four floats in compressed segments and enables <b>batch mode</b> (≈900 rows per CPU step).</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Execution plans</div>
+    <h2>Before and after, in SSMS</h2>
+    <div class="grid g2 mt">
+      <figure class="fig"><img src="assets/img/r2-baseline-plan.png" alt="Baseline plan of Q1/Q2 with a clustered index scan" loading="lazy"><figcaption><b>Q1/Q2 baseline.</b> Clustered Index Scan on <code>PK_MRI_Scans</code> = 96 % of the cost, with a Missing Index warning.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r2-q1-optimized.png" alt="Optimised plan of Q1 with an index seek" loading="lazy"><figcaption><b>Q1 with the covering index.</b> Index Seek returns 65 of 65 rows, no Key Lookup, warning gone.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r2-q3-baseline.png" alt="Baseline parallel plan of Q3" loading="lazy"><figcaption><b>Q3 baseline.</b> Two parallel clustered scans (53 % + 27 %), hash join, Top-N sort.</figcaption></figure>
+      <figure class="fig"><img src="assets/img/r2-q3-columnstore.png" alt="Q3 plan with a columnstore index scan in batch mode" loading="lazy"><figcaption><b>Q3 with columnstore.</b> The scan of <code>Image_Features</code> drops from 53 % to 1 % of the plan.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">Benchmark</div>
+    <h2>Reads, CPU and elapsed time</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Query</th><th>State</th><th class="num">Total reads</th><th class="num">CPU (ms)</th><th class="num">Elapsed (ms)</th><th>Main operator</th></tr></thead>
+        <tbody>
+          <tr><td rowspan="2"><b>Q1</b></td><td>Baseline</td><td class="num">1,882</td><td class="num">15</td><td class="num">72</td><td>Clustered Index Scan</td></tr>
+          <tr class="hl"><td>Covering index</td><td class="num">8</td><td class="num">0</td><td class="num">37</td><td>Index Seek, 0 Key Lookups</td></tr>
+          <tr><td rowspan="2"><b>Q2</b></td><td>Baseline</td><td class="num">1,882</td><td class="num">0</td><td class="num">132</td><td>Clustered Index Scan</td></tr>
+          <tr class="hl"><td>Covering index</td><td class="num">8</td><td class="num">0</td><td class="num">123</td><td>Index Seek + residual filter</td></tr>
+          <tr><td rowspan="2"><b>Q3</b></td><td>Baseline</td><td class="num">5,881</td><td class="num">76</td><td class="num">144</td><td>Parallel scan, row mode</td></tr>
+          <tr class="hl"><td>Columnstore</td><td class="num">1,812</td><td class="num">47</td><td class="num">163</td><td>Columnstore scan, batch mode</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="two-col mt">
+      <div class="callout"><b class="t">What this proves</b>An index on the foreign key removes the dominant cost of Q1/Q2 and makes it independent of table size. For Q3 a columnstore index reads far fewer pages and uses less CPU.</div>
+      <div class="callout warn"><b class="t">Honest limit</b>Q3 is <em>not</em> faster in elapsed time (144 → 163&nbsp;ms): the columnstore plan runs on one thread instead of eight. It saves resources, not wall-clock time, on this small data set. CPU and elapsed times vary by tens of milliseconds between runs.</div>
+    </div>
+    <p class="mt"><a class="btn outline" href="report.pdf#page=10">Read Chapter 2 in the report (p. 10 →)</a></p>
+    <div class="pager"><a class="btn outline" href="data.html">← Role 1</a><a class="btn solid" href="optimizer.html">Role 3 · Optimizer →</a></div>
+  </div>
+</section>
+</main>
+
+<div id="site-footer"></div>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

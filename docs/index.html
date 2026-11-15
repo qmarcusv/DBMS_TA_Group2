@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clinical MRI DBMS · Inside SQL Server | CO3021 Group 02 · HCMUT</title>
+<meta name="description" content="A workload-driven study of SQL Server 2025: storage, indexing, query optimization, transactions and concurrency, measured on 48,345 lumbar-spine MRI slices.">
+<link rel="icon" href="assets/img/logo-hcmut.png">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-page="home">
+<div id="site-header"></div>
+
+<header class="hero">
+  <div class="container">
+    <div class="eyebrow">CO3021 · Database Management Systems · Group 02</div>
+    <h1>What really happens inside SQL Server when you ask it a question?</h1>
+    <p class="lead">We loaded 575 patient reports and 48,345 lumbar-spine MRI slices into Microsoft SQL Server 2025, ran the same three clinical queries again and again, and opened the engine to see how storage, indexes, the optimizer, the transaction log and the lock manager decide how fast &mdash; and how safely &mdash; the answer comes back.</p>
+    <div class="cta">
+      <a class="btn primary" href="#story">See the story</a>
+      <a class="btn ghost" href="report.pdf">Open the full report (PDF)</a>
+      <a class="btn ghost" href="https://github.com/qmarcusv/DBMS_TA_Group2">GitHub &amp; reproduction guide</a>
+    </div>
+  </div>
+</header>
+
+<main>
+<section class="container">
+  <div class="stats">
+    <div class="stat"><div class="num" data-count="575">575</div><div class="lbl">patients with radiologist reports</div></div>
+    <div class="stat"><div class="num" data-count="48345">48,345</div><div class="lbl">MRI slices, one feature vector each</div></div>
+    <div class="stat"><div class="num">13&nbsp;GB → 53&nbsp;MB</div><div class="lbl">images on disk vs. database size</div></div>
+    <div class="stat"><div class="num">1,880 → 6</div><div class="lbl">pages read by Q1 after one index</div></div>
+    <div class="stat"><div class="num">7.9 s → 0</div><div class="lbl">reader wait with row versioning</div></div>
+  </div>
+</section>
+
+<section class="section" id="story">
+  <div class="container">
+    <div class="eyebrow">The question</div>
+    <h2>Same data, same SQL &mdash; why is one run instant and another slow?</h2>
+    <p class="lead">Every role of the group studies one part of the engine through the same three queries. They look innocent, but each one stresses the database in a different way.</p>
+    <div class="grid g3 mt">
+      <article class="card q-card reveal">
+        <span class="tag">Q1 · point lookup</span>
+        <h3>All scans of one patient</h3>
+        <p>One diagnosis joined to its 65 slices. Cheap &mdash; if the database can find them without reading the whole table.</p>
+<pre><span class="kw">SELECT</span> p.*, s.ScanID, s.ImagePath
+<span class="kw">FROM</span> Patients p <span class="kw">JOIN</span> MRI_Scans s
+  <span class="kw">ON</span> p.PatientID = s.PatientID
+<span class="kw">WHERE</span> p.PatientID = '0001';</pre>
+      </article>
+      <article class="card q-card reveal">
+        <span class="tag">Q2 · filtered</span>
+        <h3>Only the T2 sagittal sequences</h3>
+        <p>Same as Q1 plus a <code>LIKE '%T2%SAG%'</code> filter &mdash; a pattern the optimizer can only guess at.</p>
+<pre>... <span class="kw">WHERE</span> p.PatientID = '0001'
+  <span class="kw">AND</span> s.SeriesDescription
+      <span class="kw">LIKE</span> '%T2%SAG%';</pre>
+      </article>
+      <article class="card q-card reveal">
+        <span class="tag">Q3 · similarity</span>
+        <h3>The 3 most similar images</h3>
+        <p>Euclidean distance between AI feature vectors across all 48,345 slices &mdash; a brute-force scan by nature.</p>
+<pre><span class="kw">SELECT TOP</span> 3 s.ScanID,
+  <span class="kw">SQRT</span>(<span class="kw">SQUARE</span>(f.V_Dim1-@T1)+ ... ) d
+<span class="kw">FROM</span> Image_Features f <span class="kw">JOIN</span> MRI_Scans s ...
+<span class="kw">ORDER BY</span> d;</pre>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">Five angles on one engine</div>
+    <h2>One role, one component of SQL Server, one headline result</h2>
+    <div class="grid g5 mt">
+      <a class="card role-card reveal" href="data.html">
+        <span class="tag">Role 1 · Data</span>
+        <div class="big">53 MB</div>
+        <p>Store file paths, not 13&nbsp;GB of images. Bulk-load in 1.2&nbsp;s; 48,345 AI vectors on a plain CPU.</p>
+        <span class="more">Pipeline &amp; schema →</span>
+      </a>
+      <a class="card role-card reveal" href="indexing.html">
+        <span class="tag">Role 2 · Index</span>
+        <div class="big">−99.7 %</div>
+        <p>A covering index cuts Q1/Q2 from 1,880 to 6 page reads; columnstore for Q3.</p>
+        <span class="more">Index design →</span>
+      </a>
+      <a class="card role-card reveal" href="optimizer.html">
+        <span class="tag">Role 3 · Optimizer</span>
+        <div class="big">3.4× cost</div>
+        <p>Force the "wrong" join and Q3 costs 3.4× more. Statistics, spills and cut-offs explained with real plans.</p>
+        <span class="more">Plans &amp; experiments →</span>
+      </a>
+      <a class="card role-card reveal" href="transactions.html">
+        <span class="tag">Role 4 · Transactions</span>
+        <div class="big">All-or-nothing</div>
+        <p>Write-ahead log, rollback, crash recovery, and a durability trade-off that is 8.7× faster.</p>
+        <span class="more">Log &amp; recovery →</span>
+      </a>
+      <a class="card role-card reveal" href="concurrency.html">
+        <span class="tag">Role 5 · Concurrency</span>
+        <div class="big">7.9 s → 0</div>
+        <p>Locks, deadlock graphs and row versioning (RCSI): readers stop waiting for writers.</p>
+        <span class="more">Locks &amp; MVCC →</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="eyebrow">What we found</div>
+    <h2>Four measurements worth remembering</h2>
+    <div class="grid g2 mt">
+      <div class="bars" data-title="Index: pages read by Q1 (MRI_Scans)" data-sub="logical reads, cold cache · lower is better" data-rows='[["No index (table scan)",1880,"1,880","bad"],["Covering index (seek)",6,"6","good"]]'></div>
+      <div class="bars" data-title="Optimizer: Q3 under each forced join" data-sub="estimated subtree cost · the optimizer’s own choice is Hash Match" data-rows='[["Hash Match (chosen)",4.83,"4.83","good"],["Merge Join",5.16,"5.16",""],["Nested Loops",16.65,"16.65","bad"]]'></div>
+      <div class="bars" data-title="Transactions: 5,000 commits" data-sub="elapsed ms · Delayed Durability trades safety for speed" data-rows='[["Full durability",2907,"2,907 ms","bad"],["Delayed durability",334,"334 ms","good"]]'></div>
+      <div class="bars" data-title="Concurrency: a reader behind a writer" data-sub="lock wait of the reader, average of 3 runs (ms)" data-rows='[["Locking (READ COMMITTED)",7938,"7,938 ms","bad"],["Row versioning (RCSI)",0,"0 ms","good"]]'></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <div class="eyebrow">How to read this submission</div>
+    <h2>Website → report → repository</h2>
+    <div class="grid g3 mt">
+      <div class="card reveal"><span class="tag">1 · Website</span><h3>The summary</h3><p>What was done and what was achieved, in text, numbers and pictures. One page per role (you are here).</p><a class="btn outline" href="data.html">Start with Role 1</a></div>
+      <div class="card reveal"><span class="tag">2 · Report (PDF)</span><h3>The details</h3><p>67 pages. Every chapter opens with a goal, a step diagram and its key result, then theory, SQL Server internals and the experiments.</p><a class="btn outline" href="report.pdf">Open report.pdf</a></div>
+      <div class="card reveal"><span class="tag">3 · GitHub</span><h3>The reproduction</h3><p>The SQL scripts and a README that shows how to rebuild every result in SQL Server Management Studio.</p><a class="btn outline" href="reproduce.html">Reproduction guide</a></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<div id="site-footer"></div>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

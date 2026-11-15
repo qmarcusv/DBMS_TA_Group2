@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reproduce the results | Clinical MRI DBMS</title>
+<link rel="icon" href="assets/img/logo-hcmut.png">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-page="reproduce">
+<div id="site-header"></div>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="crumbs"><a href="index.html">Overview</a> / Reproduce</div>
+    <div class="eyebrow">Reproduction guide</div>
+    <h1>Rebuild every result in SQL Server Management Studio</h1>
+    <p class="lead">No programming environment is needed: restore one backup, open the scripts in SSMS, select a block and press F5. The repository README has the same guide with line numbers.</p>
+  </div>
+</header>
+
+<main>
+<section class="section">
+  <div class="container">
+    <ol class="steps reveal">
+      <li><b>Install</b><span>SQL Server 2022/2025 + SSMS</span></li>
+      <li><b>Restore</b><span>data/SpineMRI_DBMS.bak</span></li>
+      <li><b>Open a script</b><span>sql/ folder</span></li>
+      <li><b>Select a block</b><span>then press F5</span></li>
+      <li><b>Compare</b><span>with the numbers in the report</span></li>
+    </ol>
+
+    <h2 class="mt">Which script reproduces what</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Role</th><th>Script (sql/)</th><th>What you get</th><th>Tip</th></tr></thead>
+        <tbody>
+          <tr><td>All</td><td><code>00_canonical_queries.sql</code></td><td>Q1, Q2, Q3</td><td>Turn on <b>Include Actual Execution Plan</b> (Ctrl+M)</td></tr>
+          <tr><td>1</td><td><code>01_schema_definition.sql</code>, <code>02_bulk_import.sql</code></td><td>How the database was built</td><td>Optional: the backup already contains the data</td></tr>
+          <tr><td>2</td><td><code>02_role_2_indexing_experiments.sql</code></td><td>1,880 → 6 reads; columnstore for Q3</td><td>Removes its indexes at the end</td></tr>
+          <tr><td>3</td><td><code>03_role_3_experiments.sql</code></td><td>Hints, Seek vs. Scan, cut-off, spill, Adaptive Join</td><td>Run one numbered section at a time; each cleans up after itself</td></tr>
+          <tr><td>3</td><td><code>03_role_3_support.sql</code></td><td>Hash vs. Loop for Q1/Q3; statistics</td><td></td></tr>
+          <tr><td>4</td><td><code>04_transactions_recovery_role4.sql</code>, <code>04b_…</code></td><td>Atomicity, log inspection, Delayed Durability</td><td>Part B uses a scratch database it drops again</td></tr>
+          <tr><td>5</td><td><code>sql/role5/</code> (A/B file pairs)</td><td>Deadlock, RCSI, Snapshot, Q1–Q3 under a writer</td><td>Two query windows = two sessions; run <code>99_reset.sql</code> after each scenario</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid g2 mt">
+      <div class="callout"><b class="t">Expected checks after the restore</b>
+        <code>SELECT COUNT(*) FROM Patients</code> → 575<br>
+        <code>SELECT COUNT(*) FROM MRI_Scans</code> → 48,345<br>
+        <code>SELECT COUNT(*) FROM Image_Features</code> → 48,345<br>
+        Q1 returns 65 rows, Q2 returns 15 rows.</div>
+      <div class="callout warn"><b class="t">Numbers will differ slightly</b>Page counts (logical reads) reproduce exactly. Estimated rows depend on sampled statistics, and times, memory grants and the degree of parallelism depend on your machine; the plan shapes and the ratios between alternatives stay the same.</div>
+    </div>
+    <p class="mt"><a class="btn solid" href="https://github.com/qmarcusv/DBMS_TA_Group2">Open the repository README</a> <a class="btn outline" href="report.pdf">Open the report</a></p>
+    <div class="pager"><a class="btn outline" href="team.html">← Team</a><a class="btn solid" href="index.html">Back to the overview</a></div>
+  </div>
+</section>
+</main>
+
+<div id="site-footer"></div>
+<script src="assets/js/site.js"></script>
+</body>
+</html>
